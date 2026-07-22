@@ -1,0 +1,42 @@
+export const MET_ACTIVITIES = [
+  { name: 'Walking (leisurely, 3 km/h)', met: 2.8, category: 'Walking' },
+  { name: 'Walking (brisk, 5.5 km/h)', met: 3.8, category: 'Walking' },
+  { name: 'Walking (fast, 6.5 km/h)', met: 5.0, category: 'Walking' },
+  { name: 'Hiking (cross-country)', met: 6.0, category: 'Walking' },
+  { name: 'Running (8 km/h)', met: 8.3, category: 'Running' },
+  { name: 'Running (10 km/h)', met: 9.8, category: 'Running' },
+  { name: 'Running (12 km/h)', met: 11.8, category: 'Running' },
+  { name: 'Running (14 km/h)', met: 14.5, category: 'Running' },
+  { name: 'Cycling (leisurely, <16 km/h)', met: 4.0, category: 'Cycling' },
+  { name: 'Cycling (moderate, 16-19 km/h)', met: 6.8, category: 'Cycling' },
+  { name: 'Cycling (vigorous, 19-22 km/h)', met: 8.0, category: 'Cycling' },
+  { name: 'Cycling (racing, >25 km/h)', met: 12.0, category: 'Cycling' },
+  { name: 'Swimming (leisurely)', met: 6.0, category: 'Swimming' },
+  { name: 'Swimming (moderate laps)', met: 8.3, category: 'Swimming' },
+  { name: 'Swimming (vigorous laps)', met: 10.0, category: 'Swimming' },
+  { name: 'Weightlifting (light effort)', met: 3.5, category: 'Weightlifting' },
+  { name: 'Weightlifting (vigorous effort)', met: 6.0, category: 'Weightlifting' },
+  { name: 'Bodyweight circuit training', met: 8.0, category: 'Weightlifting' },
+  { name: 'Basketball (game)', met: 8.0, category: 'Sports' },
+  { name: 'Soccer (competitive)', met: 10.0, category: 'Sports' },
+  { name: 'Tennis (singles)', met: 8.0, category: 'Sports' },
+  { name: 'Football (American)', met: 8.0, category: 'Sports' },
+  { name: 'Volleyball (competitive)', met: 4.0, category: 'Sports' },
+  { name: 'Boxing (sparring)', met: 7.8, category: 'Sports' },
+  { name: 'Yoga (Hatha)', met: 2.5, category: 'Flexibility' },
+  { name: 'Yoga (Power/Vinyasa)', met: 4.0, category: 'Flexibility' },
+  { name: 'Pilates', met: 3.0, category: 'Flexibility' },
+  { name: 'Stretching', met: 2.3, category: 'Flexibility' },
+  { name: 'Rowing machine (moderate)', met: 7.0, category: 'Cardio Machines' },
+  { name: 'Elliptical trainer', met: 5.0, category: 'Cardio Machines' },
+  { name: 'Stair climbing machine', met: 9.0, category: 'Cardio Machines' },
+  { name: 'Jump rope', met: 11.0, category: 'Cardio Machines' },
+  { name: 'Dancing (general)', met: 5.0, category: 'Dance' },
+  { name: 'Gardening', met: 4.0, category: 'Daily Activity' },
+  { name: 'House cleaning', met: 3.3, category: 'Daily Activity' },
+  { name: 'Climbing stairs', met: 8.8, category: 'Daily Activity' }
+]
+
+export function metCategories() {
+  return [...new Set(MET_ACTIVITIES.map(a => a.category))]
+}

@@ -1,0 +1,17 @@
+export const ALGERIAN_FOODS = [
+  { source: 'local', ref: 'dz-couscous', name: 'Couscous (plain, steamed)', brand: null, serving_size: 100, serving_unit: 'g', calories: 112, protein: 3.8, carbs: 23.2, fiber: 1.4, sugar: 0.1, fat: 0.2, saturated_fat: 0, sodium: 5 },
+  { source: 'local', ref: 'dz-chorba', name: 'Chorba (tomato lamb soup)', brand: null, serving_size: 250, serving_unit: 'g', calories: 145, protein: 8.5, carbs: 16, fiber: 2.2, sugar: 4, fat: 5.2, saturated_fat: 1.8, sodium: 620 },
+  { source: 'local', ref: 'dz-harira', name: 'Harira (chickpea lentil soup)', brand: null, serving_size: 250, serving_unit: 'g', calories: 160, protein: 9, carbs: 22, fiber: 4.5, sugar: 3, fat: 4, saturated_fat: 1, sodium: 580 },
+  { source: 'local', ref: 'dz-mhadjeb', name: 'Mhadjeb (semolina stuffed flatbread)', brand: null, serving_size: 120, serving_unit: 'g', calories: 310, protein: 6.5, carbs: 42, fiber: 2.5, sugar: 3, fat: 13, saturated_fat: 3, sodium: 410 },
+  { source: 'local', ref: 'dz-msemen', name: 'Msemen (layered flatbread)', brand: null, serving_size: 90, serving_unit: 'g', calories: 280, protein: 5.5, carbs: 38, fiber: 1.5, sugar: 1, fat: 12, saturated_fat: 5, sodium: 260 },
+  { source: 'local', ref: 'dz-bourek', name: 'Bourek (meat filo roll)', brand: null, serving_size: 80, serving_unit: 'g', calories: 240, protein: 9, carbs: 18, fiber: 1, sugar: 1, fat: 15, saturated_fat: 4, sodium: 380 },
+  { source: 'local', ref: 'dz-makroud', name: 'Makroud (semolina date pastry)', brand: null, serving_size: 50, serving_unit: 'g', calories: 210, protein: 2.4, carbs: 32, fiber: 2, sugar: 18, fat: 8.5, saturated_fat: 3.5, sodium: 40 },
+  { source: 'local', ref: 'dz-baklawa', name: 'Baklawa (nut pastry)', brand: null, serving_size: 40, serving_unit: 'g', calories: 190, protein: 3.2, carbs: 20, fiber: 1.2, sugar: 14, fat: 11, saturated_fat: 2.5, sodium: 30 },
+  { source: 'local', ref: 'dz-zlabia', name: 'Zlabia (fried syrup pastry)', brand: null, serving_size: 50, serving_unit: 'g', calories: 220, protein: 1.8, carbs: 40, fiber: 0.4, sugar: 30, fat: 6, saturated_fat: 2, sodium: 20 },
+  { source: 'local', ref: 'dz-tajine-zitoun', name: 'Tajine Zitoun (chicken olive stew)', brand: null, serving_size: 250, serving_unit: 'g', calories: 320, protein: 22, carbs: 8, fiber: 2, sugar: 2, fat: 22, saturated_fat: 5, sodium: 650 },
+  { source: 'local', ref: 'dz-dolma', name: 'Dolma (stuffed vegetables)', brand: null, serving_size: 220, serving_unit: 'g', calories: 260, protein: 10, carbs: 28, fiber: 4, sugar: 5, fat: 11, saturated_fat: 3, sodium: 540 },
+  { source: 'local', ref: 'dz-kesra', name: 'Kesra (semolina flatbread)', brand: null, serving_size: 80, serving_unit: 'g', calories: 200, protein: 5.5, carbs: 40, fiber: 2.5, sugar: 0.5, fat: 2, saturated_fat: 0.3, sodium: 320 },
+  { source: 'local', ref: 'dz-rechta', name: 'Rechta (vermicelli chicken)', brand: null, serving_size: 300, serving_unit: 'g', calories: 380, protein: 20, carbs: 48, fiber: 2, sugar: 2, fat: 11, saturated_fat: 3, sodium: 590 },
+  { source: 'local', ref: 'dz-chakhchoukha', name: 'Chakhchoukha', brand: null, serving_size: 300, serving_unit: 'g', calories: 360, protein: 18, carbs: 40, fiber: 3, sugar: 3, fat: 14, saturated_fat: 4, sodium: 610 },
+  { source: 'local', ref: 'dz-lham-lahlou', name: 'Lham Lahlou (sweet lamb prune)', brand: null, serving_size: 200, serving_unit: 'g', calories: 410, protein: 18, carbs: 30, fiber: 2, sugar: 24, fat: 22, saturated_fat: 8, sodium: 380 }
+]
