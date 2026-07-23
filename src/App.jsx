@@ -2,6 +2,7 @@ import { Routes, Route } from 'react-router-dom'
 import { useEffect } from 'react'
 import Header from './components/Header'
 import TabNav from './components/TabNav'
+import MobileNav from './components/MobileNav'
 import ProtectedRoute from './components/ProtectedRoute'
 import Auth from './pages/Auth'
 import Onboarding from './pages/Onboarding'
@@ -22,6 +23,7 @@ function Shell({ children }) {
       <Header />
       <TabNav />
       {children}
+      <MobileNav />
     </div>
   )
 }

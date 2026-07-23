@@ -124,8 +124,8 @@ function PlanTab() {
         <div style={{ fontFamily: 'Fraunces, serif', fontSize: 20, fontWeight: 600 }}>Day-by-day targets</div>
         <div className="eyebrow">click a week to expand it</div>
       </div>
-      <div className="card" style={{ padding: 0, maxHeight: 480, overflowY: 'auto' }}>
-        <table>
+      <div className="card table-scroll" style={{ padding: 0, maxHeight: 480, overflowY: 'auto' }}>
+        <table style={{ minWidth: 520 }}>
           <thead>
             <tr><th>Day</th><th>Date</th><th>Weight</th><th>BMR</th><th>TDEE</th><th style={{ textAlign: 'right' }}>Eat today</th></tr>
           </thead>
@@ -297,8 +297,8 @@ function TrackProgressTab() {
         <div style={{ fontFamily: 'Fraunces, serif', fontSize: 20, fontWeight: 600 }}>Entry log</div>
         <button className="btn btn-secondary btn-pill" onClick={exportCsv}>EXPORT CSV</button>
       </div>
-      <div className="card" style={{ padding: 0 }}>
-        <table>
+      <div className="card table-scroll" style={{ padding: 0 }}>
+        <table style={{ minWidth: 480 }}>
           <thead><tr><th>Date</th><th>Weight</th><th>Calories</th><th style={{ textAlign: 'right' }}>vs. target</th></tr></thead>
           <tbody>
             {dailyLogs.length === 0 && <tr><td colSpan={4} style={{ textAlign: 'center', padding: 24, color: 'var(--text-secondary)' }}>No entries logged yet &mdash; add today's numbers above.</td></tr>}

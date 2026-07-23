@@ -49,7 +49,7 @@ export default function Header() {
 
   return (
     <div style={{ paddingTop: 28 }}>
-      <div className="row-between" style={{ alignItems: 'flex-start', marginBottom: 18, flexWrap: 'wrap', gap: 12 }}>
+      <div className="row-between header-top-row" style={{ alignItems: 'flex-start', marginBottom: 18, flexWrap: 'wrap', gap: 12 }}>
         <div>
           <div className="eyebrow">Protocol log</div>
           {editingName ? (
@@ -71,7 +71,7 @@ export default function Header() {
           )}
         </div>
 
-        <div style={{ textAlign: 'right' }}>
+        <div style={{ textAlign: 'right' }} className="header-meta">
           <div className="mono-meta">
             {age ? `${age}yo ` : ''}<b>{profile?.sex || '—'}</b> · {profile?.height_cm || '—'}cm · <b>{profile?.starting_weight_kg || '—'}</b> kg start
           </div>
@@ -85,7 +85,7 @@ export default function Header() {
         </div>
       </div>
 
-      <div className="row-between" style={{ marginBottom: 20 }}>
+      <div className="row-between header-toggle-row" style={{ marginBottom: 20 }}>
         <div />
         <div style={{ display: 'flex', gap: 10 }}>
           <button className="btn btn-pill" onClick={toggleUnits}>

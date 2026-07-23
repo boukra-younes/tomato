@@ -14,7 +14,7 @@ const TABS = [
 
 export default function TabNav() {
   return (
-    <div className="tabs" style={{ marginBottom: 24 }}>
+    <div className="tabs desktop-tabs" style={{ marginBottom: 24 }}>
       {TABS.map(t => (
         <NavLink key={t.to} to={t.to} end={t.to === '/'}
           className={({ isActive }) => 'tab' + (isActive ? ' active' : '')}>
