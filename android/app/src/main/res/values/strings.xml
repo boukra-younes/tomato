@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">nHealthy Tomato</string>
+    <string name="title_activity_main">nHealthy Tomato</string>
+    <string name="package_name">com.HTomato.app</string>
+    <string name="custom_url_scheme">com.HTomato.app</string>
+</resources>
