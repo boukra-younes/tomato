@@ -221,10 +221,12 @@ create index idx_workout_sessions_user_date on workout_sessions(user_id, log_dat
 create table step_logs (
   id uuid primary key default uuid_generate_v4(),
   user_id uuid references auth.users(id) on delete cascade,
-  log_date date not null default current_date unique,
+  log_date date not null default current_date,
   steps integer not null default 0,
+  calories numeric default 0,
   source text default 'manual',
-  created_at timestamptz default now()
+  created_at timestamptz default now(),
+  unique (user_id, log_date)
 );
 
 create table health_logs (
@@ -381,6 +383,61 @@ alter table food_cache enable row level security;
 create policy "authenticated read food_cache" on food_cache for select using (auth.role() = 'authenticated');
 create policy "authenticated write food_cache" on food_cache for insert with check (auth.role() = 'authenticated');
 create policy "authenticated update food_cache" on food_cache for update using (auth.role() = 'authenticated');
+
+-- Self-learning cache of AI-resolved raw-ingredient foods (Gemini fallback
+-- for the raw-ingredient search, used only when nothing matches locally).
+-- Shared, cross-user cache like food_cache — not personal data.
+create table ai_foods (
+  id uuid primary key default uuid_generate_v4(),
+  slug text unique not null,
+  canonical_name text not null,
+  ingredient text,
+  category text,
+  preparation text,
+  aliases text[] default '{}',
+  calories numeric not null default 0,
+  protein numeric default 0,
+  fat numeric default 0,
+  carbs numeric default 0,
+  fiber numeric default 0,
+  sugar numeric default 0,
+  saturated_fat numeric default 0,
+  trans_fat numeric default 0,
+  cholesterol numeric default 0,
+  sodium numeric default 0,
+  potassium numeric default 0,
+  calcium numeric default 0,
+  iron numeric default 0,
+  magnesium numeric default 0,
+  phosphorus numeric default 0,
+  zinc numeric default 0,
+  copper numeric default 0,
+  selenium numeric default 0,
+  vitamin_a numeric default 0,
+  vitamin_b1 numeric default 0,
+  vitamin_b2 numeric default 0,
+  vitamin_b3 numeric default 0,
+  vitamin_b5 numeric default 0,
+  vitamin_b6 numeric default 0,
+  vitamin_b12 numeric default 0,
+  vitamin_c numeric default 0,
+  vitamin_d numeric default 0,
+  vitamin_e numeric default 0,
+  vitamin_k numeric default 0,
+  folate numeric default 0,
+  confidence numeric default 0,
+  ai_generated boolean default true,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+create index idx_ai_foods_slug on ai_foods(slug);
+create index idx_ai_foods_canonical_name on ai_foods using gin (to_tsvector('simple', canonical_name));
+create index idx_ai_foods_ingredient on ai_foods using gin (to_tsvector('simple', coalesce(ingredient, '')));
+create index idx_ai_foods_aliases on ai_foods using gin (aliases);
+alter table ai_foods enable row level security;
+create policy "authenticated read ai_foods" on ai_foods for select using (auth.role() = 'authenticated');
+create policy "authenticated write ai_foods" on ai_foods for insert with check (auth.role() = 'authenticated');
+create policy "authenticated update ai_foods" on ai_foods for update using (auth.role() = 'authenticated');
 
 alter table profiles enable row level security;
 alter table goals enable row level security;

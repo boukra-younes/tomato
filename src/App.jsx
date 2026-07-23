@@ -37,6 +37,17 @@ export default function App() {
     document.documentElement.setAttribute('data-theme', theme)
   }, [profile])
 
+  useEffect(() => {
+    const blockBackspaceNavigation = (e) => {
+      if (e.key !== 'Backspace') return
+      const el = e.target
+      const isEditable = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable
+      if (!isEditable) e.preventDefault()
+    }
+    document.addEventListener('keydown', blockBackspaceNavigation)
+    return () => document.removeEventListener('keydown', blockBackspaceNavigation)
+  }, [])
+
   return (
     <>
       <Routes>

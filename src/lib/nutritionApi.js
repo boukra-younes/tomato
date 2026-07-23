@@ -1,44 +1,19 @@
 // =========================================================================
 // nutritionApi.js
-// Browser-only, multi-source nutrition data engine.
+// Browser-only nutrition data engine — Open Food Facts (branded/packaged)
+// + a self-learning AI-backed database (local curated foods + ai_foods
+// table + Gemini fallback) for raw ingredients.
 // No Node, no server, no TypeScript — fetch() + Supabase only.
-// =========================================================================
-//
-// BACKWARD-COMPATIBLE EXPORTS (unchanged signatures/return shapes):
-//   searchUsdaFoods, getUsdaFoodDetail, searchOpenFoodFacts, lookupBarcode,
-//   unifiedFoodSearch, scaleNutrients, searchAlgerianLibrary
-//
-// NEW EXPORTS:
-//   searchFood, normalizeFood, normalizeName, mergeFoods, sortFoods,
-//   searchLocalFoods, , searchNutritionix, searchEdamam,
-//   searchSpoonacular, extractUsdaNutrients, extractOpenFoodFactsNutrients,
-//   , extractNutritionixNutrients,
-//   extractEdamamNutrients, extractSpoonacularNutrients
 // =========================================================================
 
 import { supabase } from "./supabaseClient";
 import { ALGERIAN_FOODS as ALGERIAN_FOODS_STATIC } from "./algerianFoods.js";
 
 // -------------------------------------------------------------------------
-// SECTION: API keys (optional — missing keys silently disable that source)
-// -------------------------------------------------------------------------
-
-const USDA_KEY = import.meta.env.VITE_USDA_FDC_API_KEY || "DEMO_KEY";
-const EDAMAM_APP_ID = import.meta.env.VITE_EDAMAM_APP_ID || null;
-const EDAMAM_APP_KEY = import.meta.env.VITE_EDAMAM_APP_KEY || null;
-const SPOONACULAR_KEY = import.meta.env.VITE_SPOONACULAR_API_KEY || null;
-const NUTRITIONIX_APP_ID = import.meta.env.VITE_NUTRITIONIX_APP_ID || null;
-const NUTRITIONIX_API_KEY = import.meta.env.VITE_NUTRITIONIX_API_KEY || null;
-
-// -------------------------------------------------------------------------
 // SECTION: Endpoints
 // -------------------------------------------------------------------------
 
-const USDA_BASE = "https://api.nal.usda.gov/fdc/v1";
 const OFF_BASE = "https://world.openfoodfacts.org";
-const NUTRITIONIX_SEARCH_BASE = "https://trackapi.nutritionix.com/v2";
-const EDAMAM_BASE = "https://api.edamam.com/api/food-database/v2";
-const SPOONACULAR_BASE = "https://api.spoonacular.com";
 
 // -------------------------------------------------------------------------
 // SECTION: Fetch helpers — timeout + abort protection, never throws
@@ -63,7 +38,6 @@ async function safeFetchJson(
   }
 }
 
-// Simple in-memory request cache to avoid duplicate parallel/repeat calls
 const requestCache = new Map();
 const REQUEST_CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -173,59 +147,49 @@ export function normalizeFood(partial = {}) {
 export function normalizeName(name = "") {
   return String(name)
     .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[̀-ͯ]/g, "")
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-// -------------------------------------------------------------------------
-// SECTION: Nutrient extraction — one function per source
-// -------------------------------------------------------------------------
-
-const USDA_NUTRIENT_MAP = {
-  1008: "calories",
-  1003: "protein",
-  1005: "carbs",
-  1079: "fiber",
-  2000: "sugar",
-  1004: "fat",
-  1258: "saturated_fat",
-  1257: "trans_fat",
-  1253: "cholesterol",
-  1093: "sodium",
-  1092: "potassium",
-  1087: "calcium",
-  1089: "iron",
-  1090: "magnesium",
-  1091: "phosphorus",
-  1095: "zinc",
-  1098: "copper",
-  1103: "selenium",
-  1106: "vitamin_a",
-  1162: "vitamin_c",
-  1114: "vitamin_d",
-  1109: "vitamin_e",
-  1185: "vitamin_k",
-  1165: "vitamin_b1",
-  1166: "vitamin_b2",
-  1167: "vitamin_b3",
-  1170: "vitamin_b5",
-  1175: "vitamin_b6",
-  1178: "vitamin_b12",
-  1177: "folate",
-};
-
-export function extractUsdaNutrients(foodNutrients = []) {
-  const out = {};
-  for (const n of foodNutrients) {
-    const id = n.nutrientId || n.nutrient?.id;
-    const key = USDA_NUTRIENT_MAP[id];
-    if (key) out[key] = n.value ?? n.amount ?? 0;
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  for (let i = 1; i <= m; i++) {
+    const row = [i];
+    for (let j = 1; j <= n; j++) {
+      row[j] = a[i - 1] === b[j - 1]
+        ? prev[j - 1]
+        : 1 + Math.min(prev[j - 1], prev[j], row[j - 1]);
+    }
+    prev = row;
   }
-  return out;
+  return prev[n];
 }
+
+/**
+ * fuzzyEquivalent — true if two food names are the same food modulo
+ * spelling/transliteration variants (chorba/chourba) or substring
+ * containment (chicken breast / chicken breast raw).
+ */
+export function fuzzyEquivalent(a, b) {
+  const na = normalizeName(a);
+  const nb = normalizeName(b);
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  if (na.includes(nb) || nb.includes(na)) return true;
+  const dist = levenshtein(na, nb);
+  const threshold = Math.max(1, Math.floor(Math.min(na.length, nb.length) / 4));
+  return dist <= threshold;
+}
+
+// -------------------------------------------------------------------------
+// SECTION: Open Food Facts nutrient extraction
+// -------------------------------------------------------------------------
 
 export function extractOpenFoodFactsNutrients(n = {}) {
   return {
@@ -261,90 +225,12 @@ export function extractOpenFoodFactsNutrients(n = {}) {
   };
 }
 
-export function extractNutritionixNutrients(item = {}) {
-  const grams = item.serving_weight_grams || 100;
-  const factor = grams ? 100 / grams : 1;
-  return {
-    calories: (item.nf_calories ?? 0) * factor,
-    protein: (item.nf_protein ?? 0) * factor,
-    carbs: (item.nf_total_carbohydrate ?? 0) * factor,
-    fiber: (item.nf_dietary_fiber ?? 0) * factor,
-    sugar: (item.nf_sugars ?? 0) * factor,
-    fat: (item.nf_total_fat ?? 0) * factor,
-    saturated_fat: (item.nf_saturated_fat ?? 0) * factor,
-    cholesterol: (item.nf_cholesterol ?? 0) * factor,
-    sodium: (item.nf_sodium ?? 0) * factor,
-    potassium: (item.nf_potassium ?? 0) * factor,
-  };
-}
-
-export function extractEdamamNutrients(nutrients = {}) {
-  return {
-    calories: nutrients.ENERC_KCAL ?? 0,
-    protein: nutrients.PROCNT ?? 0,
-    carbs: nutrients.CHOCDF ?? 0,
-    fiber: nutrients.FIBTG ?? 0,
-    sugar: nutrients.SUGAR ?? 0,
-    fat: nutrients.FAT ?? 0,
-    saturated_fat: nutrients.FASAT ?? 0,
-    cholesterol: nutrients.CHOLE ?? 0,
-    sodium: nutrients.NA ?? 0,
-    potassium: nutrients.K ?? 0,
-    calcium: nutrients.CA ?? 0,
-    iron: nutrients.FE ?? 0,
-    magnesium: nutrients.MG ?? 0,
-    zinc: nutrients.ZN ?? 0,
-    vitamin_a: nutrients.VITA_RAE ?? 0,
-    vitamin_c: nutrients.VITC ?? 0,
-    vitamin_d: nutrients.VITD ?? 0,
-    vitamin_e: nutrients.TOCPHA ?? 0,
-    vitamin_k: nutrients.VITK1 ?? 0,
-    vitamin_b6: nutrients.VITB6A ?? 0,
-    vitamin_b12: nutrients.VITB12 ?? 0,
-    folate: nutrients.FOLDFE ?? 0,
-  };
-}
-
-export function extractSpoonacularNutrients(nutrition = {}) {
-  const list = nutrition.nutrients || [];
-  const find = (name) => list.find((n) => n.name === name)?.amount ?? 0;
-  return {
-    calories: find("Calories"),
-    protein: find("Protein"),
-    carbs: find("Carbohydrates"),
-    fiber: find("Fiber"),
-    sugar: find("Sugar"),
-    fat: find("Fat"),
-    saturated_fat: find("Saturated Fat"),
-    cholesterol: find("Cholesterol"),
-    sodium: find("Sodium"),
-    potassium: find("Potassium"),
-    calcium: find("Calcium"),
-    iron: find("Iron"),
-    magnesium: find("Magnesium"),
-    zinc: find("Zinc"),
-    vitamin_a: find("Vitamin A"),
-    vitamin_c: find("Vitamin C"),
-    vitamin_d: find("Vitamin D"),
-    vitamin_e: find("Vitamin E"),
-    vitamin_k: find("Vitamin K"),
-    vitamin_b6: find("Vitamin B6"),
-    vitamin_b12: find("Vitamin B12"),
-    folate: find("Folate"),
-  };
-}
-
 // -------------------------------------------------------------------------
 // SECTION: Local databases — lazy-loaded, searched first
 // -------------------------------------------------------------------------
 
 let _localDbCache = null;
 
-// Optional local databases — these files may not exist in every project yet.
-// import.meta.glob only includes files that actually exist on disk, so this
-// never causes a build-time resolution error even when japaneseFoods.js,
-// koreanFoods.js, or recipes.js are absent. Adding them later is picked up
-// automatically with zero changes to this file.
 const OPTIONAL_LOCAL_DB_MODULES = import.meta.glob(
   "./{japaneseFoods,koreanFoods,recipes}.js",
 );
@@ -400,9 +286,12 @@ export async function searchLocalFoods(query) {
     ...(dbs.recipes || []),
   ];
 
-  return all
-    .filter((f) => normalizeName(f.name || "").includes(q))
-    .map((f) => normalizeFood({ ...f, source: f.source || "local" }));
+  const substringMatches = all.filter((f) => normalizeName(f.name || "").includes(q));
+  const matches = substringMatches.length
+    ? substringMatches
+    : all.filter((f) => fuzzyEquivalent(f.name || "", query));
+
+  return matches.map((f) => normalizeFood({ ...f, source: f.source || "local" }));
 }
 
 // Backward-compatible: original Algerian-only search, unchanged signature/behavior
@@ -413,7 +302,8 @@ export async function searchAlgerianLibrary(query) {
 }
 
 // -------------------------------------------------------------------------
-// SECTION: Supabase cache (optional — never fails the search if unavailable)
+// SECTION: Supabase cache — shared cache of previously-fetched branded
+// (Open Food Facts) results only.
 // -------------------------------------------------------------------------
 
 async function searchSupabaseCache(query) {
@@ -482,7 +372,6 @@ async function storeFoodsInSupabaseCache(foods = []) {
         vitamin_k: f.vitamin_k,
         folate: f.folate,
       }));
-    // Best-effort — if the food_cache table doesn't exist yet, fail silently.
     await supabase.from("food_cache").upsert(rows, { onConflict: "id" });
   } catch {
     // never throw — caching is purely an optimization
@@ -490,67 +379,73 @@ async function storeFoodsInSupabaseCache(foods = []) {
 }
 
 // -------------------------------------------------------------------------
-// SECTION: USDA FoodData Central
-// -------------------------------------------------------------------------
-
-export async function searchUsdaFoods(query, pageSize = 20, { dataTypes = "Foundation,SR Legacy" } = {}) {
-  const params = new URLSearchParams({
-    api_key: USDA_KEY,
-    query,
-    pageSize,
-    dataType: dataTypes,
-  });
-
-  const url = `${USDA_BASE}/foods/search?${params}`;
-  const data = await cachedFetchJson(`usda:${query}:${pageSize}:${dataTypes}`, url);
-  if (!data) return [];
-  return (data.foods || []).map((f) =>
-    normalizeFood({
-      source: "usda",
-      ref: String(f.fdcId),
-      name: f.description,
-      // Foundation/SR Legacy is unbranded reference data by definition —
-      // brandOwner is intentionally never surfaced for these.
-      brand: null,
-      category: f.foodCategory || null,
-      serving_size: 100,
-      serving_unit: "g",
-      ...extractUsdaNutrients(f.foodNutrients),
-    }),
-  );
-}
-
-export async function getUsdaFoodDetail(fdcId) {
-  const url = `${USDA_BASE}/food/${fdcId}?api_key=${USDA_KEY}`;
-  const f = await cachedFetchJson(`usda-detail:${fdcId}`, url);
-  if (!f) return null;
-  return normalizeFood({
-    source: "usda",
-    ref: String(f.fdcId),
-    name: f.description,
-    brand: f.brandOwner || null,
-    ingredients: f.ingredients || null,
-    serving_size: f.servingSize || 100,
-    serving_unit: f.servingSizeUnit || "g",
-    ...extractUsdaNutrients(f.foodNutrients),
-  });
-}
-
-// -------------------------------------------------------------------------
 // SECTION: Open Food Facts
 // -------------------------------------------------------------------------
 
 export async function searchOpenFoodFacts(query, pageSize = 20) {
+  // world.openfoodfacts.org/api/v2/search is not a real endpoint — OFF's v2
+  // REST API only exposes single-product reads. Keyword search has to go
+  // through the legacy CGI search endpoint below, which OFF serves with
+  // CORS headers enabled for browser use.
   const params = new URLSearchParams({
     search_terms: query,
+    search_simple: "1",
+    action: "process",
+    json: "1",
     page_size: pageSize,
     fields:
       "code,product_name,brands,categories,image_front_small_url,ingredients_text,nutriments",
   });
 
-  const url = `${OFF_BASE}/api/v2/search?${params}`;
+  const url = `${OFF_BASE}/cgi/search.pl?${params}`;
 
   const data = await cachedFetchJson(`off:${query}:${pageSize}`, url);
+
+  if (!data) return [];
+
+  return (data.products || [])
+    .filter((p) => p.product_name)
+    .map((p) =>
+      normalizeFood({
+        source: "off",
+        ref: p.code,
+        barcode: p.code,
+        name: p.product_name,
+        brand: p.brands || null,
+        category: p.categories || null,
+        image: p.image_front_small_url || null,
+        ingredients: p.ingredients_text || null,
+        serving_size: 100,
+        serving_unit: "g",
+        ...extractOpenFoodFactsNutrients(p.nutriments || {}),
+      }),
+    );
+}
+
+/**
+ * searchOpenFoodFactsByBrand — searches by brand name specifically, using
+ * OFF's brand taxonomy tag filter rather than free-text search. This is
+ * what makes a query like "Ferrero" or "Nestlé" reliably return every
+ * product under that brand, including ones whose product name/description
+ * doesn't happen to contain the brand string (which plain search_terms
+ * would miss).
+ */
+export async function searchOpenFoodFactsByBrand(brand, pageSize = 30) {
+  const params = new URLSearchParams({
+    tagtype_0: "brands",
+    tag_contains_0: "contains",
+    tag_0: brand,
+    search_simple: "1",
+    action: "process",
+    json: "1",
+    page_size: pageSize,
+    fields:
+      "code,product_name,brands,categories,image_front_small_url,ingredients_text,nutriments",
+  });
+
+  const url = `${OFF_BASE}/cgi/search.pl?${params}`;
+
+  const data = await cachedFetchJson(`off-brand:${brand}:${pageSize}`, url);
 
   if (!data) return [];
 
@@ -594,130 +489,12 @@ async function lookupBarcodeOpenFoodFacts(barcode) {
 }
 
 // -------------------------------------------------------------------------
-// SECTION: Nutritionix (optional)
-// -------------------------------------------------------------------------
-
-export async function searchNutritionix(query) {
-  if (!NUTRITIONIX_APP_ID || !NUTRITIONIX_API_KEY) return [];
-  const url = `${NUTRITIONIX_SEARCH_BASE}/search/instant?query=${encodeURIComponent(query)}`;
-  const data = await cachedFetchJson(`nutritionix:${query}`, url, {
-    headers: {
-      "x-app-id": NUTRITIONIX_APP_ID,
-      "x-app-key": NUTRITIONIX_API_KEY,
-    },
-  });
-  if (!data) return [];
-  const branded = (data.branded || []).map((item) =>
-    normalizeFood({
-      source: "nutritionix",
-      ref: item.nix_item_id,
-      name: item.food_name,
-      brand: item.brand_name || null,
-      image: item.photo?.thumb || null,
-      serving_size: item.serving_weight_grams || 100,
-      serving_unit: "g",
-      ...extractNutritionixNutrients(item),
-    }),
-  );
-  const common = (data.common || []).map((item) =>
-    normalizeFood({
-      source: "nutritionix",
-      ref: item.food_name,
-      name: item.food_name,
-      image: item.photo?.thumb || null,
-      serving_size: 100,
-      serving_unit: "g",
-    }),
-  );
-  return [...branded, ...common];
-}
-
-async function lookupBarcodeNutritionix(barcode) {
-  if (!NUTRITIONIX_APP_ID || !NUTRITIONIX_API_KEY) return null;
-  const url = `${NUTRITIONIX_SEARCH_BASE}/search/item?upc=${barcode}`;
-  const data = await cachedFetchJson(`nutritionix-barcode:${barcode}`, url, {
-    headers: {
-      "x-app-id": NUTRITIONIX_APP_ID,
-      "x-app-key": NUTRITIONIX_API_KEY,
-    },
-  });
-  const item = data?.foods?.[0];
-  if (!item) return null;
-  return normalizeFood({
-    source: "nutritionix",
-    ref: item.nix_item_id || barcode,
-    barcode,
-    name: item.food_name,
-    brand: item.brand_name || null,
-    image: item.photo?.thumb || null,
-    serving_size: item.serving_weight_grams || 100,
-    serving_unit: "g",
-    ...extractNutritionixNutrients(item),
-  });
-}
-
-// -------------------------------------------------------------------------
-// SECTION: Edamam (optional)
-// -------------------------------------------------------------------------
-
-export async function searchEdamam(query) {
-  if (!EDAMAM_APP_ID || !EDAMAM_APP_KEY) return [];
-  const url = `${EDAMAM_BASE}/parser?app_id=${EDAMAM_APP_ID}&app_key=${EDAMAM_APP_KEY}&ingr=${encodeURIComponent(query)}`;
-  const data = await cachedFetchJson(`edamam:${query}`, url);
-  if (!data) return [];
-  return (data.hints || []).slice(0, 20).map((h) =>
-    normalizeFood({
-      source: "edamam",
-      ref: h.food?.foodId,
-      name: h.food?.label,
-      brand: h.food?.brand || null,
-      category: h.food?.category || null,
-      image: h.food?.image || null,
-      serving_size: 100,
-      serving_unit: "g",
-      ...extractEdamamNutrients(h.food?.nutrients),
-    }),
-  );
-}
-
-// -------------------------------------------------------------------------
-// SECTION: Spoonacular (optional)
-// -------------------------------------------------------------------------
-
-export async function searchSpoonacular(query) {
-  if (!SPOONACULAR_KEY) return [];
-  const url = `${SPOONACULAR_BASE}/food/ingredients/search?apiKey=${SPOONACULAR_KEY}&query=${encodeURIComponent(query)}&number=15`;
-  const data = await cachedFetchJson(`spoonacular:${query}`, url);
-  if (!data?.results?.length) return [];
-
-  const detailed = await Promise.allSettled(
-    data.results.slice(0, 10).map(async (r) => {
-      const infoUrl = `${SPOONACULAR_BASE}/food/ingredients/${r.id}/information?apiKey=${SPOONACULAR_KEY}&amount=100&unit=grams`;
-      const info = await cachedFetchJson(`spoonacular-detail:${r.id}`, infoUrl);
-      return normalizeFood({
-        source: "spoonacular",
-        ref: String(r.id),
-        name: info?.name || r.name,
-        image: info?.image
-          ? `https://spoonacular.com/cdn/ingredients_100x100/${info.image}`
-          : null,
-        category: info?.aisle || null,
-        serving_size: 100,
-        serving_unit: "g",
-        ...(info ? extractSpoonacularNutrients(info.nutrition) : {}),
-      });
-    }),
-  );
-  return detailed.filter((r) => r.status === "fulfilled").map((r) => r.value);
-}
-
-// -------------------------------------------------------------------------
 // SECTION: Deduplication & merging
 // -------------------------------------------------------------------------
 
 /**
  * mergeFoods — deduplicates a flat array of unified food objects.
- * Matches on (in priority order): barcode, USDA/source ref, normalized name.
+ * Matches on (in priority order): barcode, source ref, normalized name.
  * Keeps the first occurrence encountered (callers control priority by the
  * order they concatenate result arrays before calling this).
  */
@@ -751,38 +528,30 @@ export function mergeFoods(foods = []) {
 // SECTION: Ranking
 // -------------------------------------------------------------------------
 
-const SOURCE_PRIORITY = [
-  "local",
-  "cache",
-  "usda",
-  "off",
-  "nutritionix",
-  "edamam",
-  "spoonacular",
-];
+const SOURCE_PRIORITY = ["local", "cache", "ai", "off", "ai-pending"];
 
 /**
  * sortFoods — ranks results by: exact name match, barcode match, then
- * source priority (local > cache > usda > off  > nutritionix >
- * edamam > spoonacular), then partial/substring relevance, then alphabetical.
+ * source priority (local > cache > ai > off), then partial/substring
+ * relevance, then alphabetical.
  */
 export function sortFoods(foods = [], query = "") {
   const q = normalizeName(query);
   return [...foods].sort((a, b) => {
     const aName = normalizeName(a.name || "");
     const bName = normalizeName(b.name || "");
+    const aBrand = normalizeName(a.brand || "");
+    const bBrand = normalizeName(b.brand || "");
 
-    const aExact = aName === q ? 1 : 0;
-    const bExact = bName === q ? 1 : 0;
+    const aExact = aName === q || aBrand === q ? 1 : 0;
+    const bExact = bName === q || bBrand === q ? 1 : 0;
     if (aExact !== bExact) return bExact - aExact;
 
-    const aBarcode = a.barcode ? 1 : 0;
-    const bBarcode = b.barcode ? 1 : 0;
     if (q && a.barcode === query) return -1;
     if (q && b.barcode === query) return 1;
 
-    const aPrefix = aName.startsWith(q) ? 1 : 0;
-    const bPrefix = bName.startsWith(q) ? 1 : 0;
+    const aPrefix = aName.startsWith(q) || aBrand.startsWith(q) ? 1 : 0;
+    const bPrefix = bName.startsWith(q) || bBrand.startsWith(q) ? 1 : 0;
     if (aPrefix !== bPrefix) return bPrefix - aPrefix;
 
     const aPriority = SOURCE_PRIORITY.indexOf(a.source);
@@ -791,8 +560,8 @@ export function sortFoods(foods = [], query = "") {
     const bRank = bPriority === -1 ? SOURCE_PRIORITY.length : bPriority;
     if (aRank !== bRank) return aRank - bRank;
 
-    const aIncludes = aName.includes(q) ? 1 : 0;
-    const bIncludes = bName.includes(q) ? 1 : 0;
+    const aIncludes = aName.includes(q) || aBrand.includes(q) ? 1 : 0;
+    const bIncludes = bName.includes(q) || bBrand.includes(q) ? 1 : 0;
     if (aIncludes !== bIncludes) return bIncludes - aIncludes;
 
     return aName.localeCompare(bName);
@@ -800,13 +569,11 @@ export function sortFoods(foods = [], query = "") {
 }
 
 // -------------------------------------------------------------------------
-// SECTION: Food categorization — drives both search quality (raw-ingredient
-// dedup) and correct unit options (e.g. "1 piece" = 1 egg, never offered
-// for meat/fish, which are only ever measured by weight).
+// SECTION: Food categorization — drives both search quality and correct
+// unit options (e.g. "1 piece" = 1 egg, never offered for meat/fish, which
+// are only ever measured by weight).
 // -------------------------------------------------------------------------
 
-// Order matters — first matching rule wins. Exclude patterns prevent
-// false positives (e.g. "eggplant" matching the egg rule).
 const CATEGORY_RULES = [
   {
     key: "egg", label: "Eggs",
@@ -911,7 +678,6 @@ export function getUnitProfile(food) {
       pieceLabel: rule.pieceLabel || "piece",
     };
   }
-  // Generic/prepared/branded food — fall back to the item's own serving info.
   return {
     category: null,
     categoryLabel: null,
@@ -922,161 +688,305 @@ export function getUnitProfile(food) {
 }
 
 // -------------------------------------------------------------------------
-// SECTION: Raw-ingredient result curation — for a simple query that matches
-// a known raw-food category (e.g. "egg", "chicken breast"), prefer a small
-// set of the single best, most viable entries (plain USDA reference data)
-// over a long list of near-duplicate branded/prepared/zero-calorie results.
+// SECTION: AI fallback for raw-ingredient search (Gemini). Only used by
+// searchRawIngredient, and only when neither the local database nor the
+// self-learned ai_foods cache has a match — or when explicitly forced.
+// Searching never writes to ai_foods; only confirmAiFood (called when the
+// user actually logs the result) persists it.
 // -------------------------------------------------------------------------
 
-function curateRawFoodResults(results, query) {
-  const rule = categorizeFood(query);
-  if (!rule) return results;
+const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || null;
+const GEMINI_MODEL = "gemini-flash-lite-latest";
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
-  const wordCount = query.trim().split(/\s+/).length;
-  if (wordCount > 4) return results; // long/specific queries bypass curation
+const AI_NUTRIENT_KEYS = NUMERIC_FIELDS.filter((f) => f !== "serving_size");
 
-  const viable = results.filter(f => f.calories > 0);
-  const usdaMatches = viable.filter(f => f.source === "usda" && rule.test.test(f.name) && !(rule.exclude && rule.exclude.test(f.name)));
+const GEMINI_SYSTEM_PROMPT =
+  'You are a nutrition database assistant. Given a food search query, ' +
+  "return ONLY one JSON object describing that raw/whole food's canonical " +
+  "identity and its full nutrition profile per 100 grams. Schema: " +
+  '{"canonicalName":string,"category":string,"ingredient":string,' +
+  '"preparation":string,"aliases":string[],' +
+  `"nutrition":{${AI_NUTRIENT_KEYS.map((k) => `"${k}":number`).join(",")}},` +
+  '"confidence":number}. Fill every nutrition field you can reasonably ' +
+  "estimate; use 0 only for fields that are genuinely negligible or " +
+  "unknown for this food. confidence is 0-1, how sure you are this is a " +
+  "real, common food and the values are accurate. If the query is not a " +
+  "real food, set confidence to 0. No markdown, no explanation, JSON only.";
 
-  if (usdaMatches.length) {
-    // Prefer plain/raw entries over heavily-prepared ones when both exist.
-    const preferred = usdaMatches.filter(f => !/fried|breaded|battered|candied|glazed/i.test(f.name));
-    const pool = preferred.length ? preferred : usdaMatches;
-    const rest = viable.filter(f => !pool.includes(f));
-    return [...pool.slice(0, 6), ...rest.slice(0, 6)];
+async function safePostJson(url, body, { timeout = 12000, headers = {} } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      signal: controller.signal,
+      headers: { "Content-Type": "application/json", ...headers },
+      body: JSON.stringify(body),
+    });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    clearTimeout(timer);
+    return null;
   }
-
-  // No USDA reference data available — fall back to the best-ranked viable
-  // results from whatever sources did respond, still capped tightly.
-  return viable.slice(0, 8);
 }
 
+function slugifyFoodName(name = "") {
+  return normalizeName(name).trim().replace(/\s+/g, "-");
+}
 
+const geminiQueryPromises = new Map();
+
+async function callGeminiForFood(query) {
+  if (!GEMINI_API_KEY) return null;
+  const key = normalizeName(query);
+  if (geminiQueryPromises.has(key)) return geminiQueryPromises.get(key);
+
+  const promise = (async () => {
+    const data = await safePostJson(`${GEMINI_URL}?key=${GEMINI_API_KEY}`, {
+      systemInstruction: { parts: [{ text: GEMINI_SYSTEM_PROMPT }] },
+      contents: [{ role: "user", parts: [{ text: `Search query:\n\n${query}` }] }],
+      generationConfig: {
+        responseMimeType: "application/json",
+        temperature: 0.2,
+        maxOutputTokens: 800,
+      },
+    });
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) return null;
+    try {
+      return JSON.parse(text);
+    } catch {
+      return null;
+    }
+  })();
+
+  geminiQueryPromises.set(key, promise);
+  return promise;
+}
+
+function validateAiFoodResult(obj) {
+  if (!obj || typeof obj !== "object") return null;
+  const canonicalName = typeof obj.canonicalName === "string" ? obj.canonicalName.trim() : "";
+  if (!canonicalName) return null;
+
+  const nutrition = obj.nutrition || {};
+  const calories = Number(nutrition.calories);
+  const confidence = Number(obj.confidence);
+  if (!Number.isFinite(calories) || calories < 0) return null;
+  if (!Number.isFinite(confidence) || confidence < 0.4) return null;
+
+  const nutrients = {};
+  for (const key of AI_NUTRIENT_KEYS) {
+    if (key === "calories") continue;
+    const v = Number(nutrition[key]);
+    nutrients[key] = Number.isFinite(v) && v >= 0 ? v : 0;
+  }
+
+  return {
+    canonicalName,
+    category: typeof obj.category === "string" && obj.category.trim() ? obj.category.trim() : "Other",
+    ingredient: typeof obj.ingredient === "string" && obj.ingredient.trim() ? obj.ingredient.trim() : canonicalName,
+    preparation: typeof obj.preparation === "string" ? obj.preparation.trim() : "",
+    aliases: Array.isArray(obj.aliases)
+      ? [...new Set(obj.aliases.filter((a) => typeof a === "string" && a.trim()).map((a) => a.trim().toLowerCase()))]
+      : [],
+    calories,
+    ...nutrients,
+    confidence,
+  };
+}
+
+async function saveAiFood(validated, originalQuery) {
+  const slug = slugifyFoodName(validated.canonicalName);
+  const aliases = [
+    ...new Set([...validated.aliases, normalizeName(originalQuery), normalizeName(validated.canonicalName)].filter(Boolean)),
+  ];
+  const row = {
+    slug,
+    canonical_name: validated.canonicalName,
+    ingredient: validated.ingredient,
+    category: validated.category,
+    preparation: validated.preparation,
+    aliases,
+    confidence: validated.confidence,
+    ai_generated: true,
+  };
+  for (const key of AI_NUTRIENT_KEYS) row[key] = validated[key] ?? 0;
+
+  if (!supabase) return row;
+  try {
+    const { data, error } = await supabase.from("ai_foods").upsert(row, { onConflict: "slug" }).select().single();
+    if (error || !data) {
+      if (error) console.error("saveAiFood: ai_foods upsert failed, food was not persisted", error);
+      return row;
+    }
+    return data;
+  } catch (err) {
+    console.error("saveAiFood: ai_foods upsert threw, food was not persisted", err);
+    return row;
+  }
+}
+
+function mapAiFoodRow(row) {
+  const nutrients = {};
+  for (const key of AI_NUTRIENT_KEYS) nutrients[key] = row[key] ?? 0;
+  return normalizeFood({
+    source: "ai",
+    ref: row.slug,
+    name: row.canonical_name,
+    category: row.category || null,
+    serving_size: 100,
+    serving_unit: "g",
+    ...nutrients,
+  });
+}
+
+function buildAiPreviewFood(validated, originalQuery) {
+  const nutrients = {};
+  for (const key of AI_NUTRIENT_KEYS) nutrients[key] = validated[key] ?? 0;
+  const food = normalizeFood({
+    source: "ai-pending",
+    ref: slugifyFoodName(validated.canonicalName),
+    name: validated.canonicalName,
+    category: validated.category,
+    serving_size: 100,
+    serving_unit: "g",
+    ...nutrients,
+  });
+  food._aiPending = { validated, originalQuery };
+  return food;
+}
 
 /**
- * searchFood — searches every available source in parallel, merges,
- * deduplicates, ranks, and returns a single flat array of unified food
- * objects. Any source that is unavailable (missing key, network failure,
- * timeout) is skipped silently; the overall search never rejects.
+ * confirmAiFood — call only when the user actually logs an ai-pending
+ * result. Persists it to ai_foods so it becomes part of the searchable
+ * database from then on. Searching alone never writes to ai_foods.
  */
-// -------------------------------------------------------------------------
-// SECTION: Category-routed search — the two explicit modes the UI offers.
-// Picking a category up front, rather than merging every source together,
-// is what keeps raw-ingredient results accurate (no branded/restaurant
-// noise, no brand names, correct reference nutrient values) and keeps
-// branded/packaged search using the database actually meant for that
-// (Open Food Facts), instead of a blended, harder-to-trust result set.
-// -------------------------------------------------------------------------
+export async function confirmAiFood(food) {
+  if (!food || food.source !== "ai-pending" || !food._aiPending) return food;
+  const { validated, originalQuery } = food._aiPending;
+  const saved = await saveAiFood(validated, originalQuery);
+  return mapAiFoodRow(saved);
+}
 
 /**
- * searchRawIngredient — for whole/raw foods (eggs, chicken breast, rice,
- * apples, etc). Calls USDA only, restricted to Foundation + SR Legacy data
- * (the unbranded, lab-analyzed reference data — excludes Branded and
- * Survey/FNDDS entries, which are what were causing off/inconsistent
- * values). Local curated foods are included too, since they're never
- * branded. Never returns a brand name.
+ * searchAiFoodCache — searches the self-learned ai_foods table (previously
+ * validated + user-confirmed Gemini results). Tries exact/substring matches
+ * first (alias, canonical name, slug, ingredient), then falls back to a
+ * fuzzy pass (typos, transliteration variants like chorba/chourba) over a
+ * broader candidate set so near-matches still surface.
  */
-export async function searchRawIngredient(query) {
+export async function searchAiFoodCache(query) {
+  if (!supabase || !query || !query.trim()) return [];
+  const q = normalizeName(query);
+  const slug = slugifyFoodName(query);
+
+  try {
+    let { data } = await supabase.from("ai_foods").select("*").contains("aliases", [q]).limit(20);
+    if (data?.length) return data.map(mapAiFoodRow);
+
+    ({ data } = await supabase.from("ai_foods").select("*").ilike("canonical_name", `%${query}%`).limit(20));
+    if (data?.length) return data.map(mapAiFoodRow);
+
+    ({ data } = await supabase.from("ai_foods").select("*").ilike("slug", `%${slug}%`).limit(20));
+    if (data?.length) return data.map(mapAiFoodRow);
+
+    ({ data } = await supabase.from("ai_foods").select("*").ilike("ingredient", `%${query}%`).limit(20));
+    if (data?.length) return data.map(mapAiFoodRow);
+
+    const firstWord = q.split(" ")[0];
+    if (firstWord && firstWord.length > 2) {
+      ({ data } = await supabase
+        .from("ai_foods")
+        .select("*")
+        .or(`canonical_name.ilike.%${firstWord}%,ingredient.ilike.%${firstWord}%`)
+        .limit(20));
+      if (data?.length) return data.map(mapAiFoodRow);
+    }
+
+    const { data: broad } = await supabase.from("ai_foods").select("*").limit(300);
+    if (!broad?.length) return [];
+    const fuzzy = broad.filter(
+      (row) =>
+        fuzzyEquivalent(row.canonical_name || "", query) ||
+        (row.aliases || []).some((a) => fuzzyEquivalent(a, query)),
+    );
+    return fuzzy.map(mapAiFoodRow);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * searchRawIngredient — database-first raw-ingredient search: local curated
+ * database + the self-learned ai_foods cache, in parallel. Gemini is only
+ * called when nothing matches there (or when forceAi is set, from the
+ * "Ask AI" button), and its result is never written to ai_foods until the
+ * user actually logs it (confirmAiFood) — searching never pollutes the
+ * database. If a forced AI result turns out to be the same food as
+ * something already found, the existing database entry is reused instead
+ * of creating a duplicate.
+ */
+export async function searchRawIngredient(query, { forceAi = false } = {}) {
   if (!query || !query.trim()) return [];
 
-  const [localResults, usdaResults] = await Promise.all([
+  const [localResults, cacheResults] = await Promise.all([
     searchLocalFoods(query).catch(() => []),
-    searchUsdaFoods(query, 25, { dataTypes: "Foundation,SR Legacy" }).catch(() => []),
+    searchAiFoodCache(query).catch(() => []),
   ]);
 
-  const merged = mergeFoods([...localResults, ...usdaResults]);
-  const ranked = sortFoods(merged, query);
-  return curateRawFoodResults(ranked, query).slice(0, 30);
+  const dbResults = sortFoods(mergeFoods([...localResults, ...cacheResults]), query).slice(0, 30);
+
+  if (dbResults.length && !forceAi) return dbResults;
+  if (!GEMINI_API_KEY) return dbResults;
+
+  const aiRaw = await callGeminiForFood(query).catch(() => null);
+  const validated = validateAiFoodResult(aiRaw);
+  if (!validated) return dbResults;
+
+  const existingMatch = dbResults.find(
+    (f) =>
+      fuzzyEquivalent(f.name, validated.canonicalName) ||
+      validated.aliases.some((a) => fuzzyEquivalent(f.name, a)),
+  );
+  if (existingMatch) return sortFoods(mergeFoods([existingMatch, ...dbResults]), query).slice(0, 30);
+
+  const preview = buildAiPreviewFood(validated, query);
+  return sortFoods(mergeFoods([preview, ...dbResults]), query).slice(0, 30);
 }
 
 /**
  * searchBrandedProduct — for packaged/processed products. Calls Open Food
  * Facts only (plus the shared cache of previously-fetched OFF results),
- * since that's the database that actually carries brand, barcode, and
- * packaged-serving data. Never calls USDA.
+ * kept entirely separate from the raw-ingredient/AI path above.
  */
 export async function searchBrandedProduct(query) {
   if (!query || !query.trim()) return [];
 
-  const [cacheResults, offResults] = await Promise.all([
+  const [cacheResults, offResults, offBrandResults] = await Promise.all([
     searchSupabaseCache(query).catch(() => []),
     searchOpenFoodFacts(query, 30).catch(() => []),
+    searchOpenFoodFactsByBrand(query, 30).catch(() => []),
   ]);
 
-  const merged = mergeFoods([...offResults, ...cacheResults]);
-  const ranked = sortFoods(merged, query).slice(0, 30);
+  const merged = mergeFoods([...offBrandResults, ...offResults, ...cacheResults]);
+  const ranked = sortFoods(merged, query).slice(0, 40);
 
-  storeFoodsInSupabaseCache(offResults).catch(() => {});
+  storeFoodsInSupabaseCache([...offResults, ...offBrandResults]).catch(() => {});
 
   return ranked;
 }
 
-/**
- * searchFood — general aggregator across every source (used as the
- * fallback/general-purpose search). Prefer searchRawIngredient or
- * searchBrandedProduct when you know which category you're searching.
- */
-export async function searchFood(query, { limit = 40 } = {}) {
-  if (!query || !query.trim()) return [];
-
-  // 1. Local databases first (fast, always available, highest trust)
-  const localResults = await searchLocalFoods(query).catch(() => []);
-
-  // 2. Everything else runs in parallel — Supabase cache + all online APIs
-  const settled = await Promise.allSettled([
-    searchSupabaseCache(query),
-    searchUsdaFoods(query),
-    searchOpenFoodFacts(query),
-    searchNutritionix(query),
-    searchEdamam(query),
-    searchSpoonacular(query),
-  ]);
-
-  const [cacheR, usdaR, offR, nutritionixR, edamamR, spoonacularR] = settled;
-  const onlineResults = [
-    ...(cacheR.status === "fulfilled" ? cacheR.value : []),
-    ...(usdaR.status === "fulfilled" ? usdaR.value : []),
-    ...(offR.status === "fulfilled" ? offR.value : []),
-    ...(nutritionixR.status === "fulfilled" ? nutritionixR.value : []),
-    ...(edamamR.status === "fulfilled" ? edamamR.value : []),
-    ...(spoonacularR.status === "fulfilled" ? spoonacularR.value : []),
-  ];
-
-  const merged = mergeFoods([...localResults, ...onlineResults]);
-  const ranked = sortFoods(merged, query);
-  const curated = curateRawFoodResults(ranked, query).slice(0, limit);
-
-  // Fire-and-forget cache write — never blocks or fails the search
-  storeFoodsInSupabaseCache(onlineResults).catch(() => {});
-
-  return curated;
-}
-
-// Backward-compatible: original unifiedFoodSearch, same signature/behavior,
-// now internally backed by the full multi-source engine.
-export async function unifiedFoodSearch(query) {
-  return searchFood(query, { limit: 40 });
-}
-
 // -------------------------------------------------------------------------
-// SECTION: Barcode lookup (improved, backward-compatible signature)
+// SECTION: Barcode lookup
 // -------------------------------------------------------------------------
 
-/**
- * lookupBarcode — searches Open Food Facts, then Nutritionix,
- * in that order, returning the first successful match. Same signature and
- * return shape as before (a single unified food object, or null).
- */
 export async function lookupBarcode(barcode) {
   if (!barcode) return null;
-
-  const off = await lookupBarcodeOpenFoodFacts(barcode).catch(() => null);
-  if (off) return off;
-
-  const nutritionix = await lookupBarcodeNutritionix(barcode).catch(() => null);
-  if (nutritionix) return nutritionix;
-
-  return null;
+  return lookupBarcodeOpenFoodFacts(barcode).catch(() => null);
 }
 
 // -------------------------------------------------------------------------
@@ -1121,7 +1031,6 @@ export function scaleNutrients(food, amount, unit) {
   } else if (unitKey === "serving") {
     targetGrams = numericAmount * baseGrams;
   } else {
-    // Unknown unit — assume grams
     targetGrams = numericAmount;
   }
 

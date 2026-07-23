@@ -13,9 +13,51 @@ let gisLoaded = false
 let tokenClient = null
 let currentAccessToken = null
 let tokenExpiresAt = 0
+let refreshTimer = null
+
+const LINKED_STORAGE_KEY = 'googleFitLinked'
+const REFRESH_MARGIN_MS = 5 * 60 * 1000
 
 export function isGoogleFitConfigured() {
   return !!CLIENT_ID
+}
+
+/**
+ * wasGoogleFitLinked — true if the user previously granted Google Fit
+ * consent on this browser. The in-memory access token never survives a
+ * page reload, so this flag is what lets us attempt a silent
+ * reconnect (tryRestoreGoogleFitSession) instead of forcing the user to
+ * click "Connect" again every time they open the app.
+ */
+export function wasGoogleFitLinked() {
+  return typeof window !== 'undefined' && localStorage.getItem(LINKED_STORAGE_KEY) === '1'
+}
+
+function markLinked(linked) {
+  if (typeof window === 'undefined') return
+  if (linked) localStorage.setItem(LINKED_STORAGE_KEY, '1')
+  else localStorage.removeItem(LINKED_STORAGE_KEY)
+}
+
+/**
+ * scheduleSilentRefresh — as long as the tab stays open, silently
+ * re-requests a token a few minutes before the current one expires, so
+ * the connection never visibly drops out from under the user just from
+ * the ~1hr GIS access token lifetime. Re-arms itself after every
+ * successful refresh; gives up (leaving "Connect Google Fit" as the
+ * fallback) only if a refresh attempt genuinely fails.
+ */
+function scheduleSilentRefresh() {
+  if (refreshTimer) clearTimeout(refreshTimer)
+  const delay = Math.max(tokenExpiresAt - Date.now() - REFRESH_MARGIN_MS, 30 * 1000)
+  refreshTimer = setTimeout(() => {
+    tryRestoreGoogleFitSession()
+  }, delay)
+}
+
+function clearSilentRefresh() {
+  if (refreshTimer) clearTimeout(refreshTimer)
+  refreshTimer = null
 }
 
 function loadGisScript() {
@@ -64,6 +106,8 @@ export async function connectGoogleFit() {
           }
           currentAccessToken = response.access_token
           tokenExpiresAt = Date.now() + (response.expires_in || 3600) * 1000
+          markLinked(true)
+          scheduleSilentRefresh()
           resolve(currentAccessToken)
         }
       })
@@ -84,6 +128,56 @@ export function disconnectGoogleFit() {
   }
   currentAccessToken = null
   tokenExpiresAt = 0
+  markLinked(false)
+  clearSilentRefresh()
+}
+
+/**
+ * tryRestoreGoogleFitSession — called once per page load. If the user
+ * previously linked Google Fit on this browser, silently requests a fresh
+ * access token (no visible consent screen when the grant is still valid)
+ * so the connection survives a reload instead of requiring the user to
+ * click "Connect" again. Resolves false (never throws) if silent reauth
+ * isn't possible, leaving the "Connect Google Fit" button as the fallback.
+ */
+export async function tryRestoreGoogleFitSession() {
+  if (!CLIENT_ID || !wasGoogleFitLinked()) return false
+  if (isGoogleFitConnected()) {
+    scheduleSilentRefresh()
+    return true
+  }
+  try {
+    await loadGisScript()
+  } catch {
+    return false
+  }
+
+  return new Promise((resolve) => {
+    try {
+      tokenClient = window.google.accounts.oauth2.initTokenClient({
+        client_id: CLIENT_ID,
+        scope: SCOPES,
+        callback: (response) => {
+          if (response.error) {
+            // A silent refresh can legitimately fail (offline, third-party
+            // cookies blocked, brief Google-side hiccup) without the user
+            // having revoked access — don't unlink on that. scheduleSilentRefresh
+            // isn't re-armed here, but the next full page load or manual
+            // "Connect" retries the same silent flow.
+            resolve(false)
+            return
+          }
+          currentAccessToken = response.access_token
+          tokenExpiresAt = Date.now() + (response.expires_in || 3600) * 1000
+          scheduleSilentRefresh()
+          resolve(true)
+        }
+      })
+      tokenClient.requestAccessToken({ prompt: '' })
+    } catch {
+      resolve(false)
+    }
+  })
 }
 
 /**
@@ -175,4 +269,22 @@ export async function fetchStepsRange(startDateStr, endDateStr) {
     const date = new Date(Number(bucket.startTimeMillis)).toISOString().slice(0, 10)
     return { date, steps }
   })
+}
+
+const WALKING_MET = 3.5
+const AVERAGE_STEPS_PER_MINUTE = 100
+
+/**
+ * estimateStepsCalories — auto-calculates calories burned from a step
+ * count using the same MET formula (calories = MET x weight(kg) x
+ * duration(hours)) the rest of the app already uses for logged workouts,
+ * with duration derived from an average walking cadence of 100 steps/min.
+ * For 10,000 steps at 75kg this comes out to ~440 kcal, in line with
+ * typical fitness-tracker estimates.
+ */
+export function estimateStepsCalories(steps, weightKg = 75) {
+  const count = Number(steps) || 0
+  if (!count) return 0
+  const durationHours = count / AVERAGE_STEPS_PER_MINUTE / 60
+  return Math.round(WALKING_MET * weightKg * durationHours)
 }

@@ -1,7 +1,7 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { useAppStore } from '../context/useAppStore'
-import { searchRawIngredient, searchBrandedProduct, scaleNutrients, lookupBarcode, getUnitProfile } from '../lib/nutritionApi'
+import { searchRawIngredient, searchBrandedProduct, scaleNutrients, lookupBarcode, getUnitProfile, confirmAiFood } from '../lib/nutritionApi'
 import { DRI, NUTRIENT_LABELS, NUTRIENT_UNITS } from '../lib/dri'
 import Modal from '../components/Modal'
 import { format, addDays } from 'date-fns'
@@ -10,7 +10,7 @@ import toast from 'react-hot-toast'
 const MEAL_TYPES = ['breakfast', 'lunch', 'dinner', 'snack']
 const SEARCH_MODES = [
   { key: 'raw', label: 'Raw ingredient', hint: 'USDA reference data — eggs, meat, produce, grains. No brands.' },
-  { key: 'branded', label: 'Packaged / branded', hint: 'Open Food Facts — packaged products with a barcode.' }
+  { key: 'branded', label: 'Packaged / branded', hint: 'Open Food Facts — search by product or brand name.' }
 ]
 
 // The only columns that actually exist on food_logs. Everything else
@@ -44,6 +44,7 @@ export default function Food() {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
   const [searching, setSearching] = useState(false)
+  const [hasSearched, setHasSearched] = useState(false)
   const [selectedFood, setSelectedFood] = useState(null)
   const [amount, setAmount] = useState(100)
   const [unit, setUnit] = useState('g')
@@ -59,15 +60,19 @@ export default function Food() {
 
   useEffect(() => { if (user) fetchDayData(user.id, selectedDate) }, [user, selectedDate])
 
-  const runSearch = async (e) => {
+  const runSearch = async (e, forceAi = false) => {
     e?.preventDefault()
     if (!query.trim()) return
     setSearching(true)
     try {
       const res = searchMode === 'branded'
         ? await searchBrandedProduct(query)
-        : await searchRawIngredient(query)
+        : await searchRawIngredient(query, { forceAi })
       setResults(res)
+      setHasSearched(true)
+      if (forceAi && !res.some(f => f.source === 'ai-pending')) {
+        toast('AI found a match already in the database')
+      }
     } catch {
       toast.error('Search failed')
     } finally {
@@ -78,6 +83,7 @@ export default function Food() {
   const clearSearch = () => {
     setQuery('')
     setResults([])
+    setHasSearched(false)
   }
 
   const openFoodDetail = (food) => {
@@ -107,16 +113,18 @@ export default function Food() {
   }
 
   const logFood = async (food, amountVal, unitVal, meal) => {
-    const scaled = scaleNutrients(food, Number(amountVal), unitVal)
+    const resolvedFood = food.source === 'ai-pending' ? await confirmAiFood(food) : food
+    const scaled = scaleNutrients(resolvedFood, Number(amountVal), unitVal)
     const { topLevel, micronutrients } = splitScaledNutrients(scaled)
     await addFoodLog(user.id, {
       log_date: selectedDate, meal_type: meal,
-      food_source: food.source, food_ref: food.ref,
-      food_name: food.name, brand: food.brand,
+      food_source: resolvedFood.source, food_ref: resolvedFood.ref,
+      food_name: resolvedFood.name, brand: resolvedFood.brand,
       amount: Number(amountVal), unit: unitVal,
       micronutrients,
       ...topLevel
     })
+    return resolvedFood
   }
 
   const confirmLog = async () => {
@@ -161,8 +169,8 @@ export default function Food() {
   }
 
   const previewScaled = useMemo(() => {
-    if (!selectedFood || !amount) return null
-    return scaleNutrients(selectedFood, Number(amount), unit)
+    if (!selectedFood) return null
+    return scaleNutrients(selectedFood, Number(amount) || 0, unit)
   }, [selectedFood, amount, unit])
 
   const mealsGrouped = MEAL_TYPES.reduce((acc, m) => { acc[m] = foodLogs.filter(f => f.meal_type === m); return acc }, {})
@@ -207,7 +215,7 @@ export default function Food() {
         </div>
 
         <form onSubmit={runSearch} style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
-          <input placeholder={searchMode === 'raw' ? 'e.g. chicken breast, egg, banana' : 'e.g. Nutella, Coca-Cola'} value={query} onChange={e => setQuery(e.target.value)} />
+          <input placeholder={searchMode === 'raw' ? 'e.g. chicken breast, egg, banana' : 'e.g. Nutella, Coca-Cola'} value={query} onChange={e => { setQuery(e.target.value); setHasSearched(false) }} />
           {query && <button type="button" className="btn btn-pill" onClick={clearSearch}>Clear</button>}
           <button className="btn btn-primary" type="submit">Search</button>
         </form>
@@ -224,8 +232,18 @@ export default function Food() {
         </div>
 
         {searching && <p className="eyebrow">Searching...</p>}
-        {!searching && query && results.length === 0 && (
-          <div className="eyebrow" style={{ textAlign: 'center', padding: '16px 0' }}>No foods matched "{query}".</div>
+        {!searching && hasSearched && results.length === 0 && (
+          <div style={{ textAlign: 'center', padding: '16px 0' }}>
+            <div className="eyebrow" style={{ marginBottom: 10 }}>No foods matched "{query}".</div>
+            {searchMode === 'raw' && (
+              <button className="btn btn-secondary btn-pill" onClick={() => runSearch(null, true)}>ASK AI</button>
+            )}
+          </div>
+        )}
+        {!searching && hasSearched && searchMode === 'raw' && results.length > 0 && !results.some(f => f.source === 'ai-pending' || f.source === 'ai') && (
+          <div style={{ textAlign: 'right', marginBottom: 8 }}>
+            <button className="btn btn-secondary btn-pill" onClick={() => runSearch(null, true)}>ASK AI INSTEAD</button>
+          </div>
         )}
         {results.map((f, i) => {
           const catProfile = getUnitProfile(f)
@@ -236,6 +254,8 @@ export default function Food() {
                 <div>
                   {f.name}
                   {f.source === 'local' && <span className="chip-est">EST</span>}
+                  {f.source === 'ai-pending' && <span className="chip-est" title="AI estimate — saved to the database only once you add it">AI &middot; not saved yet</span>}
+                  {f.source === 'ai' && <span className="chip-est">AI</span>}
                   {catProfile.categoryLabel && <span className="chip-est" style={{ background: 'var(--teal-soft)', color: 'var(--teal)' }}>{catProfile.categoryLabel}</span>}
                 </div>
                 <div className="eyebrow">{(searchMode === 'branded' ? f.brand : null) || f.category || f.source.toUpperCase()} &middot; {f.serving_size || 100}{f.serving_unit || 'g'} serving</div>

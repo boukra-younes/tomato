@@ -9,7 +9,8 @@ import {
 } from '../lib/exerciseDatabase'
 import {
   isGoogleFitConfigured, isGoogleFitConnected, connectGoogleFit,
-  disconnectGoogleFit, fetchStepsForDate
+  disconnectGoogleFit, fetchStepsForDate, tryRestoreGoogleFitSession, wasGoogleFitLinked,
+  estimateStepsCalories
 } from '../lib/googleFit'
 import Modal from '../components/Modal'
 import { format, addDays } from 'date-fns'
@@ -36,8 +37,10 @@ export default function Exercise() {
   const [sessionItems, setSessionItems] = useState([])
   const [todaysWorkouts, setTodaysWorkouts] = useState([])
   const [steps, setSteps] = useState('')
+  const [stepsSource, setStepsSource] = useState(null)
   const [gitFitBusy, setGitFitBusy] = useState(false)
   const [fitConnected, setFitConnected] = useState(isGoogleFitConnected())
+  const [fitRestoring, setFitRestoring] = useState(isGoogleFitConfigured() && wasGoogleFitLinked() && !isGoogleFitConnected())
 
   const weightForCalc = currentTrendWeight || profile?.starting_weight_kg || 75
 
@@ -47,6 +50,51 @@ export default function Exercise() {
     if (!user) return
     loadTodaysWorkouts()
   }, [user, selectedDate])
+
+  useEffect(() => {
+    if (!isGoogleFitConfigured() || !wasGoogleFitLinked() || isGoogleFitConnected()) {
+      setFitRestoring(false)
+      return
+    }
+    (async () => {
+      const ok = await tryRestoreGoogleFitSession()
+      setFitConnected(ok)
+      setFitRestoring(false)
+    })()
+  }, [])
+
+  // The GIS access token silently refreshes itself in the background
+  // (googleFit.js) so the connection survives past its ~1hr lifetime, but
+  // that refresh doesn't push a React update — poll the in-memory state
+  // occasionally so the UI (and the auto-sync effect below) notices.
+  useEffect(() => {
+    if (!isGoogleFitConfigured()) return
+    const interval = setInterval(() => {
+      setFitConnected(current => {
+        const now = isGoogleFitConnected()
+        return current === now ? current : now
+      })
+    }, 60 * 1000)
+    return () => clearInterval(interval)
+  }, [])
+
+  useEffect(() => {
+    if (!user) return
+    (async () => {
+      const { data } = await supabase
+        .from('step_logs').select('*')
+        .eq('user_id', user.id).eq('log_date', selectedDate)
+        .maybeSingle()
+
+      if (fitConnected && (!data || data.source !== 'manual')) {
+        await syncStepsFromFit({ silent: true })
+        return
+      }
+
+      if (data) { setSteps(String(data.steps)); setStepsSource(data.source) }
+      else { setSteps(''); setStepsSource(null) }
+    })()
+  }, [user, selectedDate, fitConnected])
 
   const loadTodaysWorkouts = async () => {
     const { data: sessions } = await supabase
@@ -177,7 +225,13 @@ export default function Exercise() {
 
   const logSteps = async () => {
     if (!steps) return
-    await supabase.from('step_logs').upsert({ user_id: user.id, log_date: selectedDate, steps: Number(steps), source: 'manual' }, { onConflict: 'user_id,log_date' })
+    const count = Number(steps)
+    const { error } = await supabase.from('step_logs').upsert(
+      { user_id: user.id, log_date: selectedDate, steps: count, calories: estimateStepsCalories(count, weightForCalc), source: 'manual' },
+      { onConflict: 'user_id,log_date' }
+    )
+    if (error) { toast.error('Could not save steps'); return }
+    setStepsSource('manual')
     toast.success('Steps saved')
   }
 
@@ -198,21 +252,27 @@ export default function Exercise() {
     }
   }
 
-  const syncStepsFromFit = async () => {
-    setGitFitBusy(true)
+  const syncStepsFromFit = async ({ silent = false } = {}) => {
+    if (!silent) setGitFitBusy(true)
     try {
       const count = await fetchStepsForDate(selectedDate)
-      await supabase.from('step_logs').upsert({ user_id: user.id, log_date: selectedDate, steps: count, source: 'google_fit' }, { onConflict: 'user_id,log_date' })
+      const { error } = await supabase.from('step_logs').upsert(
+        { user_id: user.id, log_date: selectedDate, steps: count, calories: estimateStepsCalories(count, weightForCalc), source: 'google_fit' },
+        { onConflict: 'user_id,log_date' }
+      )
+      if (error) throw error
       setSteps(String(count))
-      toast.success(`Synced ${count.toLocaleString()} steps from Google Fit`)
+      setStepsSource('google_fit')
+      if (!silent) toast.success(`Synced ${count.toLocaleString()} steps from Google Fit`)
     } catch (err) {
-      toast.error(err.message || 'Sync failed')
+      if (!silent) toast.error(err.message || 'Sync failed')
     } finally {
-      setGitFitBusy(false)
+      if (!silent) setGitFitBusy(false)
     }
   }
 
-  const totalBurned = exerciseLogs.reduce((a, e) => a + Number(e.calories_burned || 0), 0)
+  const stepsCalories = useMemo(() => estimateStepsCalories(Number(steps) || 0, weightForCalc), [steps, weightForCalc])
+  const totalBurned = exerciseLogs.reduce((a, e) => a + Number(e.calories_burned || 0), 0) + stepsCalories
   const isToday = selectedDate === format(new Date(), 'yyyy-MM-dd')
 
   return (
@@ -307,23 +367,29 @@ export default function Exercise() {
           <div style={{ fontFamily: 'Fraunces, serif', fontSize: 18, fontWeight: 600 }}>Steps</div>
           {isGoogleFitConfigured() && (
             <span className="eyebrow" style={{ color: fitConnected ? 'var(--teal)' : 'var(--text-secondary)' }}>
-              {fitConnected ? 'Google Fit connected' : 'Google Fit not connected'}
+              {fitRestoring ? 'Reconnecting to Google Fit…' : fitConnected ? 'Google Fit connected' : 'Google Fit not connected'}
             </span>
           )}
         </div>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 10 }}>
-          <input type="number" placeholder="Steps today" value={steps} onChange={e => setSteps(e.target.value)} style={{ maxWidth: 180 }} />
+          <input type="number" placeholder="Steps today" value={steps} onChange={e => { setSteps(e.target.value); setStepsSource('manual') }} style={{ maxWidth: 180 }} />
           <button className="btn btn-secondary" onClick={logSteps}>Save</button>
           {isGoogleFitConfigured() && !fitConnected && (
-            <button className="btn btn-secondary" disabled={gitFitBusy} onClick={handleConnectGoogleFit}>Connect Google Fit</button>
+            <button className="btn btn-secondary" disabled={gitFitBusy || fitRestoring} onClick={handleConnectGoogleFit}>Connect Google Fit</button>
           )}
           {isGoogleFitConfigured() && fitConnected && (
             <>
-              <button className="btn btn-secondary" disabled={gitFitBusy} onClick={syncStepsFromFit}>Sync from Google Fit</button>
-              <button className="btn btn-pill" onClick={() => { disconnectGoogleFit(); setFitConnected(false) }}>Disconnect</button>
+              <button className="btn btn-secondary" disabled={gitFitBusy} onClick={() => syncStepsFromFit()}>Sync from Google Fit</button>
+              <button className="btn btn-pill" onClick={() => { disconnectGoogleFit(); setFitConnected(false); setStepsSource(null) }}>Disconnect</button>
             </>
           )}
         </div>
+        {stepsSource && (
+          <div className="eyebrow" style={{ marginTop: 8 }}>
+            {stepsSource === 'google_fit' ? 'From Google Fit' : 'Entered manually'}
+            {stepsCalories > 0 && ` · ~${stepsCalories.toLocaleString()} kcal burned (auto-calculated, included in total)`}
+          </div>
+        )}
         {!isGoogleFitConfigured() && (
           <div className="eyebrow" style={{ marginTop: 10 }}>Set VITE_GOOGLE_CLIENT_ID in .env to enable Google Fit step sync.</div>
         )}
