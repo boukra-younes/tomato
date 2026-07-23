@@ -175,7 +175,6 @@ function TrackProgressTab() {
   const { user, profile } = useAuth()
   const { planSummary, dailyLogs, saveDailyLog, streaksAndAdherence, recompute } = useDeficitStore()
   const [date, setDate] = useState(format(new Date(), 'yyyy-MM-dd'))
-  const [calories, setCalories] = useState('')
   const [weight, setWeight] = useState('')
 
   useEffect(() => { if (user && profile) recompute(user.id, profile) }, [user, profile])
@@ -184,11 +183,15 @@ function TrackProgressTab() {
     ? Math.max(1, differenceInCalendarDays(new Date(), new Date(profile.plan_started_at)) + 1)
     : 1
 
+  // Calories are never typed in here — they're kept in sync automatically
+  // from whatever's actually logged on the Food page (useAppStore.syncDailyCalories).
+  const autoCalories = dailyLogs.find(l => l.log_date === date)?.calories_eaten
+
   const save = async () => {
-    if (!calories && !weight) return
-    await saveDailyLog(user.id, date, { caloriesEaten: calories, weightKg: weight })
+    if (!weight) return
+    await saveDailyLog(user.id, date, { weightKg: weight })
     await recompute(user.id, profile)
-    setCalories(''); setWeight('')
+    setWeight('')
     toast.success('Entry saved')
   }
 
@@ -232,12 +235,18 @@ function TrackProgressTab() {
       <div className="card">
         <div className="grid-4">
           <div><label>Date</label><input type="date" value={date} onChange={e => setDate(e.target.value)} /></div>
-          <div><label>Calories eaten</label><input type="number" placeholder="e.g. 2050" value={calories} onChange={e => setCalories(e.target.value)} /></div>
+          <div>
+            <label>Calories eaten (auto)</label>
+            <div style={{ padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', background: 'var(--panel-2)', fontFamily: 'IBM Plex Mono, monospace' }}>
+              {autoCalories != null ? `${Math.round(autoCalories)} kcal` : '— log food to auto-fill'}
+            </div>
+          </div>
           <div><label>Weight (kg)</label><input type="number" step="0.1" placeholder="e.g. 96.0" value={weight} onChange={e => setWeight(e.target.value)} /></div>
           <div style={{ display: 'flex', alignItems: 'flex-end' }}>
             <button className="btn btn-primary" style={{ width: '100%' }} onClick={save}>SAVE ENTRY</button>
           </div>
         </div>
+        <div className="eyebrow" style={{ marginTop: 12 }}>Calories are pulled automatically from what you log on the Food page for this date — no manual entry needed.</div>
       </div>
 
       <div style={{ fontFamily: 'Fraunces, serif', fontSize: 22, fontWeight: 600, margin: '24px 0 12px' }}>Adherence</div>

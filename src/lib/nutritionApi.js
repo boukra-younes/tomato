@@ -797,8 +797,158 @@ export function sortFoods(foods = [], query = "") {
 }
 
 // -------------------------------------------------------------------------
-// SECTION: Unified search (new primary entry point)
+// SECTION: Food categorization — drives both search quality (raw-ingredient
+// dedup) and correct unit options (e.g. "1 piece" = 1 egg, never offered
+// for meat/fish, which are only ever measured by weight).
 // -------------------------------------------------------------------------
+
+// Order matters — first matching rule wins. Exclude patterns prevent
+// false positives (e.g. "eggplant" matching the egg rule).
+const CATEGORY_RULES = [
+  {
+    key: "egg", label: "Eggs",
+    test: /\begg(s)?\b/i, exclude: /eggplant|egg\s*roll|egg\s*noodle/i,
+    units: ["piece", "g", "oz"], pieceGrams: 50, pieceLabel: "egg",
+  },
+  {
+    key: "poultry", label: "Poultry",
+    test: /\b(chicken|turkey|duck|hen)\b/i, exclude: /egg/i,
+    units: ["g", "kg", "oz", "lb"], pieceGrams: null,
+  },
+  {
+    key: "red_meat", label: "Meat",
+    test: /\b(beef|steak|pork|lamb|veal|bacon|sausage|ham|venison|mutton)\b/i,
+    units: ["g", "kg", "oz", "lb"], pieceGrams: null,
+  },
+  {
+    key: "seafood", label: "Seafood",
+    test: /\b(salmon|tuna|shrimp|prawn|fish|cod|tilapia|crab|lobster|sardine|anchovy|mackerel|trout)\b/i,
+    units: ["g", "kg", "oz", "lb"], pieceGrams: null,
+  },
+  {
+    key: "milk", label: "Dairy (liquid)",
+    test: /\bmilk\b/i, exclude: /milk\s*chocolate|coconut\s*milk\s*candy/i,
+    units: ["ml", "l", "cup", "tbsp"], pieceGrams: null,
+  },
+  {
+    key: "liquid", label: "Liquid",
+    test: /\b(juice|oil|water|soda|broth|stock|beer|wine|smoothie)\b/i,
+    units: ["ml", "l", "cup", "tbsp", "tsp"], pieceGrams: null,
+  },
+  {
+    key: "dairy", label: "Dairy",
+    test: /\b(yogurt|yoghurt|cheese|cream|butter)\b/i,
+    units: ["g", "oz", "cup", "tbsp"], pieceGrams: null,
+  },
+  {
+    key: "bread", label: "Bread",
+    test: /\b(bread|toast|tortilla|bagel|bun|baguette)\b/i,
+    units: ["slice", "g", "oz"], pieceGrams: 30, pieceLabel: "slice",
+  },
+  {
+    key: "grain", label: "Grains",
+    test: /\b(rice|pasta|oats?|oatmeal|quinoa|cereal|noodle|couscous)\b/i,
+    units: ["g", "cup", "oz"], pieceGrams: null,
+  },
+  {
+    key: "banana", label: "Fruit",
+    test: /\bbanana(s)?\b/i,
+    units: ["piece", "g", "oz"], pieceGrams: 118, pieceLabel: "banana",
+  },
+  {
+    key: "apple", label: "Fruit",
+    test: /\bapple(s)?\b/i, exclude: /apple\s*juice|apple\s*sauce|pineapple/i,
+    units: ["piece", "g", "oz"], pieceGrams: 182, pieceLabel: "apple",
+  },
+  {
+    key: "orange", label: "Fruit",
+    test: /\borange(s)?\b/i, exclude: /orange\s*juice/i,
+    units: ["piece", "g", "oz"], pieceGrams: 131, pieceLabel: "orange",
+  },
+  {
+    key: "fruit", label: "Fruit",
+    test: /\b(pear|peach|plum|mango|kiwi|avocado)\b/i,
+    units: ["piece", "g", "oz"], pieceGrams: 150, pieceLabel: "piece",
+  },
+  {
+    key: "vegetable", label: "Vegetables",
+    test: /\b(broccoli|spinach|carrot|tomato|pepper|onion|potato|lettuce|cucumber|cabbage|kale|zucchini)\b/i,
+    units: ["g", "cup", "oz"], pieceGrams: null,
+  },
+];
+
+/**
+ * categorizeFood — classifies a food by name into a raw-ingredient category
+ * (or null for anything that doesn't match, e.g. prepared/branded dishes).
+ */
+export function categorizeFood(name = "") {
+  const n = String(name);
+  for (const rule of CATEGORY_RULES) {
+    if (rule.exclude && rule.exclude.test(n)) continue;
+    if (rule.test.test(n)) return rule;
+  }
+  return null;
+}
+
+/**
+ * getUnitProfile — returns the correct list of loggable units for a given
+ * food, plus the gram weight to use for "piece"-style units. Meat, poultry,
+ * and seafood never get "piece" — they're weight-only. Eggs, bananas, etc.
+ * get a real per-item gram weight instead of the generic (and wrong)
+ * "amount x reference serving" fallback.
+ */
+export function getUnitProfile(food) {
+  const rule = categorizeFood(food?.name || "");
+  if (rule) {
+    return {
+      category: rule.key,
+      categoryLabel: rule.label,
+      units: rule.units,
+      pieceGrams: rule.pieceGrams,
+      pieceLabel: rule.pieceLabel || "piece",
+    };
+  }
+  // Generic/prepared/branded food — fall back to the item's own serving info.
+  return {
+    category: null,
+    categoryLabel: null,
+    units: ["g", "oz", "cup", "serving"],
+    pieceGrams: food?.serving_size || 100,
+    pieceLabel: "serving",
+  };
+}
+
+// -------------------------------------------------------------------------
+// SECTION: Raw-ingredient result curation — for a simple query that matches
+// a known raw-food category (e.g. "egg", "chicken breast"), prefer a small
+// set of the single best, most viable entries (plain USDA reference data)
+// over a long list of near-duplicate branded/prepared/zero-calorie results.
+// -------------------------------------------------------------------------
+
+function curateRawFoodResults(results, query) {
+  const rule = categorizeFood(query);
+  if (!rule) return results;
+
+  const wordCount = query.trim().split(/\s+/).length;
+  if (wordCount > 4) return results; // long/specific queries bypass curation
+
+  const viable = results.filter(f => f.calories > 0);
+  const usdaMatches = viable.filter(f => f.source === "usda" && rule.test.test(f.name) && !(rule.exclude && rule.exclude.test(f.name)));
+
+  if (usdaMatches.length) {
+    // Prefer plain/raw entries over heavily-prepared ones when both exist.
+    const preferred = usdaMatches.filter(f => !/fried|breaded|battered|candied|glazed/i.test(f.name));
+    const pool = preferred.length ? preferred : usdaMatches;
+    const rest = viable.filter(f => !pool.includes(f));
+    return [...pool.slice(0, 6), ...rest.slice(0, 6)];
+  }
+
+  // No USDA reference data available — fall back to the best-ranked viable
+  // results from whatever sources did respond, still capped tightly.
+  return viable.slice(0, 8);
+}
+
+
 
 /**
  * searchFood — searches every available source in parallel, merges,
@@ -833,12 +983,13 @@ export async function searchFood(query, { limit = 40 } = {}) {
   ];
 
   const merged = mergeFoods([...localResults, ...onlineResults]);
-  const ranked = sortFoods(merged, query).slice(0, limit);
+  const ranked = sortFoods(merged, query);
+  const curated = curateRawFoodResults(ranked, query).slice(0, limit);
 
   // Fire-and-forget cache write — never blocks or fails the search
   storeFoodsInSupabaseCache(onlineResults).catch(() => {});
 
-  return ranked;
+  return curated;
 }
 
 // Backward-compatible: original unifiedFoodSearch, same signature/behavior,
@@ -888,21 +1039,26 @@ const UNIT_TO_GRAMS = {
 /**
  * scaleNutrients — scales a unified food's nutrients to a logged amount/unit.
  * Supports g, kg, mg, oz, lb, ml, l, cup, tbsp, tsp, piece, slice, serving.
- * For non-weight units (piece, slice, serving) the food's own serving_size
- * is used as the per-unit gram weight when available, else falls back to
- * treating the amount as whole multiples of the reference serving.
+ * For "piece"/"slice" the correct real-world per-item gram weight is used
+ * (from getUnitProfile's category rules — e.g. 1 egg = 50g, 1 banana =
+ * 118g) rather than the food's own reference serving, which was wrong for
+ * anything not already measured in single-item servings. "serving" still
+ * uses the food's own serving_size, since that's what it actually means.
  */
 export function scaleNutrients(food, amount, unit) {
   const baseGrams = food.serving_size || 100;
   const numericAmount = Number(amount) || 0;
+  const unitKey = String(unit || "g").toLowerCase();
 
   let targetGrams;
-  const unitKey = String(unit || "g").toLowerCase();
 
   if (UNIT_TO_GRAMS[unitKey]) {
     targetGrams = numericAmount * UNIT_TO_GRAMS[unitKey];
-  } else if (["piece", "slice", "serving"].includes(unitKey)) {
-    // Whole-unit types scale directly against the food's own reference serving
+  } else if (unitKey === "piece" || unitKey === "slice") {
+    const profile = getUnitProfile(food);
+    const pieceGrams = profile.pieceGrams || baseGrams;
+    targetGrams = numericAmount * pieceGrams;
+  } else if (unitKey === "serving") {
     targetGrams = numericAmount * baseGrams;
   } else {
     // Unknown unit — assume grams

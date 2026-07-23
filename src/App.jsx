@@ -15,6 +15,7 @@ import Health from './pages/Health'
 import Progress from './pages/Progress'
 import Reports from './pages/Reports'
 import Tools from './pages/Tools'
+import PwaUpdatePrompt from './components/PwaUpdatePrompt'
 import { useAuth } from './context/AuthContext'
 
 function Shell({ children }) {
@@ -37,18 +38,21 @@ export default function App() {
   }, [profile])
 
   return (
-    <Routes>
-      <Route path="/auth" element={<Auth />} />
-      <Route path="/onboarding" element={<ProtectedRoute><Onboarding /></ProtectedRoute>} />
-      <Route path="/" element={<ProtectedRoute><Shell><Home /></Shell></ProtectedRoute>} />
-      <Route path="/food" element={<ProtectedRoute><Shell><Food /></Shell></ProtectedRoute>} />
-      <Route path="/plan" element={<ProtectedRoute><Shell><Plan /></Shell></ProtectedRoute>} />
-      <Route path="/body" element={<ProtectedRoute><Shell><Body /></Shell></ProtectedRoute>} />
-      <Route path="/exercise" element={<ProtectedRoute><Shell><Exercise /></Shell></ProtectedRoute>} />
-      <Route path="/health" element={<ProtectedRoute><Shell><Health /></Shell></ProtectedRoute>} />
-      <Route path="/progress" element={<ProtectedRoute><Shell><Progress /></Shell></ProtectedRoute>} />
-      <Route path="/reports" element={<ProtectedRoute><Shell><Reports /></Shell></ProtectedRoute>} />
-      <Route path="/tools" element={<ProtectedRoute><Shell><Tools /></Shell></ProtectedRoute>} />
-    </Routes>
+    <>
+      <Routes>
+        <Route path="/auth" element={<Auth />} />
+        <Route path="/onboarding" element={<ProtectedRoute><Onboarding /></ProtectedRoute>} />
+        <Route path="/" element={<ProtectedRoute><Shell><Home /></Shell></ProtectedRoute>} />
+        <Route path="/food" element={<ProtectedRoute><Shell><Food /></Shell></ProtectedRoute>} />
+        <Route path="/plan" element={<ProtectedRoute><Shell><Plan /></Shell></ProtectedRoute>} />
+        <Route path="/body" element={<ProtectedRoute><Shell><Body /></Shell></ProtectedRoute>} />
+        <Route path="/exercise" element={<ProtectedRoute><Shell><Exercise /></Shell></ProtectedRoute>} />
+        <Route path="/health" element={<ProtectedRoute><Shell><Health /></Shell></ProtectedRoute>} />
+        <Route path="/progress" element={<ProtectedRoute><Shell><Progress /></Shell></ProtectedRoute>} />
+        <Route path="/reports" element={<ProtectedRoute><Shell><Reports /></Shell></ProtectedRoute>} />
+        <Route path="/tools" element={<ProtectedRoute><Shell><Tools /></Shell></ProtectedRoute>} />
+      </Routes>
+      <PwaUpdatePrompt />
+    </>
   )
 }

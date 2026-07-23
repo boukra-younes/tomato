@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { useAppStore } from '../context/useAppStore'
-import { unifiedFoodSearch, scaleNutrients, lookupBarcode } from '../lib/nutritionApi'
+import { unifiedFoodSearch, scaleNutrients, lookupBarcode, getUnitProfile } from '../lib/nutritionApi'
 import { DRI, NUTRIENT_LABELS, NUTRIENT_UNITS } from '../lib/dri'
 import Modal from '../components/Modal'
 import { format, addDays } from 'date-fns'
@@ -16,6 +16,30 @@ const SOURCE_FILTERS = [
   { key: 'recipe', label: 'Recipes' }
 ]
 
+// The only columns that actually exist on food_logs. Everything else
+// scaleNutrients returns (potassium, vitamin_a, etc.) has to go into the
+// micronutrients jsonb column instead — passing them as top-level keys
+// silently fails the insert (unknown column), which was the root cause of
+// "food doesn't add correctly".
+const TOP_LEVEL_NUTRIENT_KEYS = ['calories', 'protein', 'carbs', 'fiber', 'sugar', 'fat', 'saturated_fat', 'sodium']
+
+function splitScaledNutrients(scaled) {
+  const topLevel = {}
+  const micronutrients = {}
+  for (const [key, value] of Object.entries(scaled)) {
+    if (TOP_LEVEL_NUTRIENT_KEYS.includes(key)) topLevel[key] = value
+    else micronutrients[key] = value
+  }
+  return { topLevel, micronutrients }
+}
+
+const EXTRA_NUTRIENT_KEYS = [
+  'trans_fat', 'cholesterol', 'potassium', 'calcium', 'iron', 'magnesium',
+  'phosphorus', 'zinc', 'copper', 'selenium', 'vitamin_a', 'vitamin_c',
+  'vitamin_d', 'vitamin_e', 'vitamin_k', 'vitamin_b1', 'vitamin_b2',
+  'vitamin_b3', 'vitamin_b6', 'vitamin_b12', 'folate'
+]
+
 export default function Food() {
   const { user, profile } = useAuth()
   const { foodLogs, fetchDayData, addFoodLog, deleteFoodLog, selectedDate, setSelectedDate } = useAppStore()
@@ -27,12 +51,14 @@ export default function Food() {
   const [amount, setAmount] = useState(100)
   const [unit, setUnit] = useState('g')
   const [mealType, setMealType] = useState('breakfast')
+  const [showMoreNutrients, setShowMoreNutrients] = useState(false)
   const [quickAddOpen, setQuickAddOpen] = useState(false)
   const [quickCalories, setQuickCalories] = useState('')
   const [barcodeOpen, setBarcodeOpen] = useState(false)
   const [barcode, setBarcode] = useState('')
   const [savedTab, setSavedTab] = useState('recent')
   const [expanded, setExpanded] = useState({})
+  const [adding, setAdding] = useState(false)
 
   useEffect(() => { if (user) fetchDayData(user.id, selectedDate) }, [user, selectedDate])
 
@@ -50,6 +76,11 @@ export default function Food() {
     }
   }
 
+  const clearSearch = () => {
+    setQuery('')
+    setResults([])
+  }
+
   const filteredResults = results.filter(f => {
     if (sourceFilter === 'all') return true
     if (sourceFilter === 'local') return f.source === 'local'
@@ -59,27 +90,73 @@ export default function Food() {
     return true
   })
 
+  const openFoodDetail = (food) => {
+    setSelectedFood(food)
+    const profile = getUnitProfile(food)
+    if (profile.pieceGrams && profile.units.includes('piece')) {
+      setAmount(1)
+      setUnit('piece')
+    } else {
+      setAmount(food.serving_size || 100)
+      setUnit(profile.units.includes(food.serving_unit) ? food.serving_unit : profile.units[0])
+    }
+    setShowMoreNutrients(false)
+  }
+
   const runBarcodeSearch = async () => {
     try {
       const food = await lookupBarcode(barcode)
       if (!food) { toast.error('Product not found'); return }
-      setSelectedFood(food)
+      openFoodDetail(food)
       setBarcodeOpen(false)
+      setBarcode('')
     } catch {
       toast.error('Barcode lookup failed')
     }
   }
 
-  const confirmLog = async () => {
-    const scaled = scaleNutrients(selectedFood, Number(amount), unit)
+  const logFood = async (food, amountVal, unitVal, meal) => {
+    const scaled = scaleNutrients(food, Number(amountVal), unitVal)
+    const { topLevel, micronutrients } = splitScaledNutrients(scaled)
     await addFoodLog(user.id, {
-      log_date: selectedDate, meal_type: mealType,
-      food_source: selectedFood.source, food_ref: selectedFood.ref,
-      food_name: selectedFood.name, brand: selectedFood.brand,
-      amount: Number(amount), unit, ...scaled
+      log_date: selectedDate, meal_type: meal,
+      food_source: food.source, food_ref: food.ref,
+      food_name: food.name, brand: food.brand,
+      amount: Number(amountVal), unit: unitVal,
+      micronutrients,
+      ...topLevel
     })
-    toast.success('Logged')
-    setSelectedFood(null)
+  }
+
+  const confirmLog = async () => {
+    setAdding(true)
+    try {
+      await logFood(selectedFood, amount, unit, mealType)
+      toast.success(`${selectedFood.name} added`)
+      setSelectedFood(null)
+      clearSearch()
+    } catch (err) {
+      toast.error(err.message || 'Could not add food')
+    } finally {
+      setAdding(false)
+    }
+  }
+
+  // "Add directly" from the results list — logs at the food's natural
+  // default (1 egg, 1 banana, or its own reference serving) without opening
+  // the detail modal.
+  const quickAddFromResult = async (food, e) => {
+    e.stopPropagation()
+    const profile = getUnitProfile(food)
+    const useUnit = profile.pieceGrams && profile.units.includes('piece') ? 'piece' : (profile.units.includes(food.serving_unit) ? food.serving_unit : profile.units[0])
+    const useAmount = useUnit === 'piece' ? 1 : (food.serving_size || 100)
+    try {
+      await logFood(food, useAmount, useUnit, mealType)
+      toast.success(`${food.name} added`)
+      clearSearch()
+    } catch (err) {
+      toast.error(err.message || 'Could not add food')
+    }
   }
 
   const confirmQuickAdd = async () => {
@@ -91,6 +168,11 @@ export default function Food() {
     setQuickCalories('')
     toast.success('Logged')
   }
+
+  const previewScaled = useMemo(() => {
+    if (!selectedFood || !amount) return null
+    return scaleNutrients(selectedFood, Number(amount), unit)
+  }, [selectedFood, amount, unit])
 
   const mealsGrouped = MEAL_TYPES.reduce((acc, m) => { acc[m] = foodLogs.filter(f => f.meal_type === m); return acc }, {})
   const dayTotals = foodLogs.reduce((acc, f) => ({
@@ -114,9 +196,16 @@ export default function Food() {
       <div className="card">
         <div style={{ fontFamily: 'Fraunces, serif', fontSize: 20, fontWeight: 600, marginBottom: 2 }}>Search foods</div>
         <div className="eyebrow" style={{ marginBottom: 16 }}>Local database, or Open Food Facts when online</div>
-        <form onSubmit={runSearch}>
-          <input placeholder="chicken" value={query} onChange={e => setQuery(e.target.value)} style={{ marginBottom: 14 }} />
+        <form onSubmit={runSearch} style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
+          <input placeholder="chicken" value={query} onChange={e => setQuery(e.target.value)} />
+          {query && <button type="button" className="btn btn-pill" onClick={clearSearch}>Clear</button>}
         </form>
+        <div style={{ marginBottom: 14 }}>
+          <label>Logging to meal</label>
+          <select value={mealType} onChange={e => setMealType(e.target.value)} style={{ maxWidth: 220 }}>
+            {MEAL_TYPES.map(m => <option key={m} value={m} style={{ textTransform: 'capitalize' }}>{m}</option>)}
+          </select>
+        </div>
         <div className="pill-group" style={{ marginBottom: 14 }}>
           {SOURCE_FILTERS.map(f => (
             <button key={f.key} className={'filter-pill' + (sourceFilter === f.key ? ' active' : '')} onClick={() => setSourceFilter(f.key)}>{f.label}</button>
@@ -129,18 +218,31 @@ export default function Food() {
         </div>
 
         {searching && <p className="eyebrow">Searching...</p>}
-        {filteredResults.map((f, i) => (
-          <div key={i} onClick={() => setSelectedFood(f)}
-            className="list-row" style={{ cursor: 'pointer' }}>
-            <div>
-              <div>{f.name}{f.source === 'local' && <span className="chip-est">EST</span>}</div>
-              <div className="eyebrow">{f.brand || f.category || f.source.toUpperCase()}</div>
+        {!searching && query && filteredResults.length === 0 && (
+          <div className="eyebrow" style={{ textAlign: 'center', padding: '16px 0' }}>No foods matched "{query}".</div>
+        )}
+        {filteredResults.map((f, i) => {
+          const catProfile = getUnitProfile(f)
+          return (
+            <div key={i} onClick={() => openFoodDetail(f)}
+              className="list-row" style={{ cursor: 'pointer' }}>
+              <div>
+                <div>
+                  {f.name}
+                  {f.source === 'local' && <span className="chip-est">EST</span>}
+                  {catProfile.categoryLabel && <span className="chip-est" style={{ background: 'var(--teal-soft)', color: 'var(--teal)' }}>{catProfile.categoryLabel}</span>}
+                </div>
+                <div className="eyebrow">{f.brand || f.category || f.source.toUpperCase()} &middot; {f.serving_size || 100}{f.serving_unit || 'g'} serving</div>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div className="value" style={{ textAlign: 'right' }}>
+                  {Math.round(f.calories)}<div className="eyebrow">kcal</div>
+                </div>
+                <button className="btn btn-pill" onClick={(e) => quickAddFromResult(f, e)} title="Add directly at default serving">+ Add</button>
+              </div>
             </div>
-            <div className="value" style={{ textAlign: 'right' }}>
-              {Math.round(f.calories)}<div className="eyebrow">kcal/100g</div>
-            </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
 
       <div className="row-between" style={{ marginBottom: 8, marginTop: 28 }}>
@@ -177,7 +279,7 @@ export default function Food() {
 
       <div className="card">
         <div style={{ fontFamily: 'Fraunces, serif', fontSize: 20, fontWeight: 600, marginBottom: 12 }}>Day totals</div>
-        <div className="list-row"><span className="label">Calories</span><span className="value">{Math.round(dayTotals.calories)} / {'—'} kcal</span></div>
+        <div className="list-row"><span className="label">Calories</span><span className="value">{Math.round(dayTotals.calories)} kcal</span></div>
         <div className="list-row"><span className="label">Protein</span><span className="value">{Math.round(dayTotals.protein)} g</span></div>
         <div className="list-row"><span className="label">Carbs</span><span className="value">{Math.round(dayTotals.carbs)} g</span></div>
         <div className="list-row"><span className="label">Fat</span><span className="value">{Math.round(dayTotals.fat)} g</span></div>
@@ -197,7 +299,7 @@ export default function Food() {
           return (
             <div key={key} className="list-row">
               <span className="label">{NUTRIENT_LABELS[key] || key}</span>
-              <span className="value">{val} / {target} {NUTRIENT_UNITS[key]} &middot; {pct}% &middot; {pct < 50 ? 'low' : pct > 150 ? 'high' : 'ok'}</span>
+              <span className="value">{Math.round(val * 10) / 10} / {target} {NUTRIENT_UNITS[key]} &middot; {pct}% &middot; {pct < 50 ? 'low' : pct > 150 ? 'high' : 'ok'}</span>
             </div>
           )
         })}
@@ -219,26 +321,82 @@ export default function Food() {
       </div>
 
       <Modal open={!!selectedFood} onClose={() => setSelectedFood(null)} title={selectedFood?.name}>
-        {selectedFood && (
+        {selectedFood && previewScaled && (() => {
+          const unitProfile = getUnitProfile(selectedFood)
+          const UNIT_LABELS = {
+            g: 'grams', kg: 'kg', oz: 'ounces', lb: 'lb', ml: 'ml', l: 'liters',
+            cup: 'cup', tbsp: 'tbsp', tsp: 'tsp',
+            piece: unitProfile.pieceLabel === 'slice' ? 'slice' : (unitProfile.pieceLabel || 'piece'),
+            serving: 'serving'
+          }
+          return (
           <div>
+            {selectedFood.brand && <div className="eyebrow" style={{ marginBottom: 4 }}>{selectedFood.brand}</div>}
+            {unitProfile.categoryLabel && <div className="eyebrow" style={{ marginBottom: 12, color: 'var(--teal)' }}>{unitProfile.categoryLabel}</div>}
+
             <div className="grid-2" style={{ marginBottom: 16 }}>
               <div><label>Amount</label><input type="number" value={amount} onChange={e => setAmount(e.target.value)} /></div>
               <div>
                 <label>Unit</label>
-                <select value={unit} onChange={e => setUnit(e.target.value)}>
-                  <option value="g">grams</option><option value="oz">ounces</option><option value="ml">ml</option><option value="cup">cup</option>
+                <select value={unit} onChange={e => {
+                  const newUnit = e.target.value
+                  const wasPieceLike = unit === 'piece' || unit === 'slice'
+                  const isPieceLike = newUnit === 'piece' || newUnit === 'slice'
+                  if (isPieceLike && !wasPieceLike) setAmount(1)
+                  else if (!isPieceLike && wasPieceLike) setAmount(unitProfile.pieceGrams || 100)
+                  setUnit(newUnit)
+                }}>
+                  {unitProfile.units.map(u => <option key={u} value={u}>{UNIT_LABELS[u] || u}</option>)}
                 </select>
               </div>
             </div>
+
             <div style={{ marginBottom: 16 }}>
               <label>Meal</label>
               <select value={mealType} onChange={e => setMealType(e.target.value)}>
                 {MEAL_TYPES.map(m => <option key={m} value={m}>{m}</option>)}
               </select>
             </div>
-            <button className="btn btn-primary" style={{ width: '100%' }} onClick={confirmLog}>Add to log</button>
+
+            <div className="card" style={{ background: 'var(--panel-2)', marginBottom: 16 }}>
+              <div className="row-between" style={{ marginBottom: 10 }}>
+                <span className="eyebrow">Nutrition for {amount} {UNIT_LABELS[unit] || unit}{(unit === 'piece' && Number(amount) > 1) ? 's' : ''}</span>
+                <span style={{ fontFamily: 'Fraunces, serif', fontSize: 22, fontWeight: 600 }}>{Math.round(previewScaled.calories)} kcal</span>
+              </div>
+              <div className="list-row"><span className="label">Protein</span><span className="value">{previewScaled.protein.toFixed(1)} g</span></div>
+              <div className="list-row"><span className="label">Carbs</span><span className="value">{previewScaled.carbs.toFixed(1)} g</span></div>
+              <div className="list-row"><span className="label">Fat</span><span className="value">{previewScaled.fat.toFixed(1)} g</span></div>
+              <div className="list-row"><span className="label text-secondary">Fiber</span><span className="value">{(previewScaled.fiber || 0).toFixed(1)} g</span></div>
+              <div className="list-row"><span className="label text-secondary">Sugar</span><span className="value">{(previewScaled.sugar || 0).toFixed(1)} g</span></div>
+              <div className="list-row"><span className="label text-secondary">Saturated fat</span><span className="value">{(previewScaled.saturated_fat || 0).toFixed(1)} g</span></div>
+              <div className="list-row"><span className="label text-secondary">Sodium</span><span className="value">{Math.round(previewScaled.sodium || 0)} mg</span></div>
+
+              <button
+                className="btn btn-pill"
+                style={{ marginTop: 10 }}
+                onClick={() => setShowMoreNutrients(s => !s)}
+              >
+                {showMoreNutrients ? 'Hide' : 'Show'} more nutrients
+              </button>
+
+              {showMoreNutrients && (
+                <div style={{ marginTop: 10 }}>
+                  {EXTRA_NUTRIENT_KEYS.map(key => (
+                    <div key={key} className="list-row">
+                      <span className="label text-secondary">{NUTRIENT_LABELS[key] || key.replace(/_/g, ' ')}</span>
+                      <span className="value">{Math.round((previewScaled[key] || 0) * 10) / 10} {NUTRIENT_UNITS[key] || (key === 'cholesterol' || key === 'trans_fat' ? 'mg' : '')}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <button className="btn btn-primary" style={{ width: '100%' }} disabled={adding} onClick={confirmLog}>
+              {adding ? 'Adding...' : 'Add to log'}
+            </button>
           </div>
-        )}
+          )
+        })()}
       </Modal>
 
       <Modal open={quickAddOpen} onClose={() => setQuickAddOpen(false)} title="Quick add calories">

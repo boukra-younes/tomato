@@ -4,6 +4,7 @@ import { useDeficitStore } from '../context/useDeficitStore'
 import { ageFromBirthDate } from '../lib/calculations'
 import Modal from './Modal'
 import PlanEditor from './PlanEditor'
+import InstallButton from './InstallButton'
 import toast from 'react-hot-toast'
 
 export default function Header() {
@@ -88,6 +89,7 @@ export default function Header() {
       <div className="row-between header-toggle-row" style={{ marginBottom: 20 }}>
         <div />
         <div style={{ display: 'flex', gap: 10 }}>
+          <InstallButton />
           <button className="btn btn-pill" onClick={toggleUnits}>
             {profile?.unit_system === 'imperial' ? 'LB / IN' : 'KG / CM'}
           </button>
