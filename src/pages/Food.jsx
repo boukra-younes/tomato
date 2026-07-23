@@ -1,19 +1,16 @@
 import { useEffect, useState, useMemo } from 'react'
 import { useAuth } from '../context/AuthContext'
 import { useAppStore } from '../context/useAppStore'
-import { unifiedFoodSearch, scaleNutrients, lookupBarcode, getUnitProfile } from '../lib/nutritionApi'
+import { searchRawIngredient, searchBrandedProduct, scaleNutrients, lookupBarcode, getUnitProfile } from '../lib/nutritionApi'
 import { DRI, NUTRIENT_LABELS, NUTRIENT_UNITS } from '../lib/dri'
 import Modal from '../components/Modal'
 import { format, addDays } from 'date-fns'
 import toast from 'react-hot-toast'
 
 const MEAL_TYPES = ['breakfast', 'lunch', 'dinner', 'snack']
-const SOURCE_FILTERS = [
-  { key: 'all', label: 'All' },
-  { key: 'local', label: 'Local' },
-  { key: 'off', label: 'Packaged' },
-  { key: 'custom', label: 'My foods' },
-  { key: 'recipe', label: 'Recipes' }
+const SEARCH_MODES = [
+  { key: 'raw', label: 'Raw ingredient', hint: 'USDA reference data — eggs, meat, produce, grains. No brands.' },
+  { key: 'branded', label: 'Packaged / branded', hint: 'Open Food Facts — packaged products with a barcode.' }
 ]
 
 // The only columns that actually exist on food_logs. Everything else
@@ -43,9 +40,9 @@ const EXTRA_NUTRIENT_KEYS = [
 export default function Food() {
   const { user, profile } = useAuth()
   const { foodLogs, fetchDayData, addFoodLog, deleteFoodLog, selectedDate, setSelectedDate } = useAppStore()
+  const [searchMode, setSearchMode] = useState('raw')
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
-  const [sourceFilter, setSourceFilter] = useState('all')
   const [searching, setSearching] = useState(false)
   const [selectedFood, setSelectedFood] = useState(null)
   const [amount, setAmount] = useState(100)
@@ -67,8 +64,10 @@ export default function Food() {
     if (!query.trim()) return
     setSearching(true)
     try {
-      const res = await unifiedFoodSearch(query)
-      setResults(res.slice(0, 30))
+      const res = searchMode === 'branded'
+        ? await searchBrandedProduct(query)
+        : await searchRawIngredient(query)
+      setResults(res)
     } catch {
       toast.error('Search failed')
     } finally {
@@ -80,15 +79,6 @@ export default function Food() {
     setQuery('')
     setResults([])
   }
-
-  const filteredResults = results.filter(f => {
-    if (sourceFilter === 'all') return true
-    if (sourceFilter === 'local') return f.source === 'local'
-    if (sourceFilter === 'off') return f.source === 'off'
-    if (sourceFilter === 'custom') return f.source === 'custom'
-    if (sourceFilter === 'recipe') return f.source === 'recipe'
-    return true
-  })
 
   const openFoodDetail = (food) => {
     setSelectedFood(food)
@@ -107,6 +97,7 @@ export default function Food() {
     try {
       const food = await lookupBarcode(barcode)
       if (!food) { toast.error('Product not found'); return }
+      setSearchMode('branded')
       openFoodDetail(food)
       setBarcodeOpen(false)
       setBarcode('')
@@ -195,21 +186,36 @@ export default function Food() {
 
       <div className="card">
         <div style={{ fontFamily: 'Fraunces, serif', fontSize: 20, fontWeight: 600, marginBottom: 2 }}>Search foods</div>
-        <div className="eyebrow" style={{ marginBottom: 16 }}>Local database, or Open Food Facts when online</div>
+        <div className="eyebrow" style={{ marginBottom: 14 }}>Choose what you're looking for, then search</div>
+
+        <div className="grid-2" style={{ marginBottom: 16 }}>
+          {SEARCH_MODES.map(m => (
+            <button
+              key={m.key}
+              onClick={() => { setSearchMode(m.key); clearSearch() }}
+              className="card"
+              style={{
+                textAlign: 'left', cursor: 'pointer', margin: 0, padding: 14,
+                borderColor: searchMode === m.key ? 'var(--teal)' : 'var(--border)',
+                background: searchMode === m.key ? 'var(--teal-soft)' : 'var(--panel)'
+              }}
+            >
+              <div style={{ fontWeight: 600, color: searchMode === m.key ? 'var(--teal)' : 'var(--text-primary)' }}>{m.label}</div>
+              <div className="eyebrow" style={{ marginTop: 4 }}>{m.hint}</div>
+            </button>
+          ))}
+        </div>
+
         <form onSubmit={runSearch} style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
-          <input placeholder="chicken" value={query} onChange={e => setQuery(e.target.value)} />
+          <input placeholder={searchMode === 'raw' ? 'e.g. chicken breast, egg, banana' : 'e.g. Nutella, Coca-Cola'} value={query} onChange={e => setQuery(e.target.value)} />
           {query && <button type="button" className="btn btn-pill" onClick={clearSearch}>Clear</button>}
+          <button className="btn btn-primary" type="submit">Search</button>
         </form>
         <div style={{ marginBottom: 14 }}>
           <label>Logging to meal</label>
           <select value={mealType} onChange={e => setMealType(e.target.value)} style={{ maxWidth: 220 }}>
             {MEAL_TYPES.map(m => <option key={m} value={m} style={{ textTransform: 'capitalize' }}>{m}</option>)}
           </select>
-        </div>
-        <div className="pill-group" style={{ marginBottom: 14 }}>
-          {SOURCE_FILTERS.map(f => (
-            <button key={f.key} className={'filter-pill' + (sourceFilter === f.key ? ' active' : '')} onClick={() => setSourceFilter(f.key)}>{f.label}</button>
-          ))}
         </div>
         <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
           <button className="btn btn-secondary" onClick={() => setBarcodeOpen(true)}>BARCODE LOOKUP</button>
@@ -218,10 +224,10 @@ export default function Food() {
         </div>
 
         {searching && <p className="eyebrow">Searching...</p>}
-        {!searching && query && filteredResults.length === 0 && (
+        {!searching && query && results.length === 0 && (
           <div className="eyebrow" style={{ textAlign: 'center', padding: '16px 0' }}>No foods matched "{query}".</div>
         )}
-        {filteredResults.map((f, i) => {
+        {results.map((f, i) => {
           const catProfile = getUnitProfile(f)
           return (
             <div key={i} onClick={() => openFoodDetail(f)}
@@ -232,7 +238,7 @@ export default function Food() {
                   {f.source === 'local' && <span className="chip-est">EST</span>}
                   {catProfile.categoryLabel && <span className="chip-est" style={{ background: 'var(--teal-soft)', color: 'var(--teal)' }}>{catProfile.categoryLabel}</span>}
                 </div>
-                <div className="eyebrow">{f.brand || f.category || f.source.toUpperCase()} &middot; {f.serving_size || 100}{f.serving_unit || 'g'} serving</div>
+                <div className="eyebrow">{(searchMode === 'branded' ? f.brand : null) || f.category || f.source.toUpperCase()} &middot; {f.serving_size || 100}{f.serving_unit || 'g'} serving</div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                 <div className="value" style={{ textAlign: 'right' }}>
@@ -331,7 +337,7 @@ export default function Food() {
           }
           return (
           <div>
-            {selectedFood.brand && <div className="eyebrow" style={{ marginBottom: 4 }}>{selectedFood.brand}</div>}
+            {selectedFood.brand && searchMode === 'branded' && <div className="eyebrow" style={{ marginBottom: 4 }}>{selectedFood.brand}</div>}
             {unitProfile.categoryLabel && <div className="eyebrow" style={{ marginBottom: 12, color: 'var(--teal)' }}>{unitProfile.categoryLabel}</div>}
 
             <div className="grid-2" style={{ marginBottom: 16 }}>

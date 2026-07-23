@@ -493,25 +493,22 @@ async function storeFoodsInSupabaseCache(foods = []) {
 // SECTION: USDA FoodData Central
 // -------------------------------------------------------------------------
 
-export async function searchUsdaFoods(query, pageSize = 20, { dataTypes = "Foundation,SR Legacy" } = {}) {
+export async function searchUsdaFoods(query, pageSize = 20) {
   const params = new URLSearchParams({
     api_key: USDA_KEY,
     query,
     pageSize,
-    dataType: dataTypes,
   });
 
   const url = `${USDA_BASE}/foods/search?${params}`;
-  const data = await cachedFetchJson(`usda:${query}:${pageSize}:${dataTypes}`, url);
+  const data = await cachedFetchJson(`usda:${query}:${pageSize}`, url);
   if (!data) return [];
   return (data.foods || []).map((f) =>
     normalizeFood({
       source: "usda",
       ref: String(f.fdcId),
       name: f.description,
-      // Foundation/SR Legacy is unbranded reference data by definition —
-      // brandOwner is intentionally never surfaced for these.
-      brand: null,
+      brand: f.brandOwner || null,
       category: f.foodCategory || null,
       serving_size: 100,
       serving_unit: "g",
@@ -958,63 +955,6 @@ function curateRawFoodResults(results, query) {
  * deduplicates, ranks, and returns a single flat array of unified food
  * objects. Any source that is unavailable (missing key, network failure,
  * timeout) is skipped silently; the overall search never rejects.
- */
-// -------------------------------------------------------------------------
-// SECTION: Category-routed search — the two explicit modes the UI offers.
-// Picking a category up front, rather than merging every source together,
-// is what keeps raw-ingredient results accurate (no branded/restaurant
-// noise, no brand names, correct reference nutrient values) and keeps
-// branded/packaged search using the database actually meant for that
-// (Open Food Facts), instead of a blended, harder-to-trust result set.
-// -------------------------------------------------------------------------
-
-/**
- * searchRawIngredient — for whole/raw foods (eggs, chicken breast, rice,
- * apples, etc). Calls USDA only, restricted to Foundation + SR Legacy data
- * (the unbranded, lab-analyzed reference data — excludes Branded and
- * Survey/FNDDS entries, which are what were causing off/inconsistent
- * values). Local curated foods are included too, since they're never
- * branded. Never returns a brand name.
- */
-export async function searchRawIngredient(query) {
-  if (!query || !query.trim()) return [];
-
-  const [localResults, usdaResults] = await Promise.all([
-    searchLocalFoods(query).catch(() => []),
-    searchUsdaFoods(query, 25, { dataTypes: "Foundation,SR Legacy" }).catch(() => []),
-  ]);
-
-  const merged = mergeFoods([...localResults, ...usdaResults]);
-  const ranked = sortFoods(merged, query);
-  return curateRawFoodResults(ranked, query).slice(0, 30);
-}
-
-/**
- * searchBrandedProduct — for packaged/processed products. Calls Open Food
- * Facts only (plus the shared cache of previously-fetched OFF results),
- * since that's the database that actually carries brand, barcode, and
- * packaged-serving data. Never calls USDA.
- */
-export async function searchBrandedProduct(query) {
-  if (!query || !query.trim()) return [];
-
-  const [cacheResults, offResults] = await Promise.all([
-    searchSupabaseCache(query).catch(() => []),
-    searchOpenFoodFacts(query, 30).catch(() => []),
-  ]);
-
-  const merged = mergeFoods([...offResults, ...cacheResults]);
-  const ranked = sortFoods(merged, query).slice(0, 30);
-
-  storeFoodsInSupabaseCache(offResults).catch(() => {});
-
-  return ranked;
-}
-
-/**
- * searchFood — general aggregator across every source (used as the
- * fallback/general-purpose search). Prefer searchRawIngredient or
- * searchBrandedProduct when you know which category you're searching.
  */
 export async function searchFood(query, { limit = 40 } = {}) {
   if (!query || !query.trim()) return [];
