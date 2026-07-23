@@ -9,7 +9,7 @@ import {
 } from '../lib/exerciseDatabase'
 import {
   isGoogleFitConfigured, isGoogleFitConnected, connectGoogleFit,
-  disconnectGoogleFit, fetchStepsForDate, tryRestoreGoogleFitSession, wasGoogleFitLinked,
+  disconnectGoogleFit, fetchStepsForDate, tryRestoreGoogleFitSession,
   estimateStepsCalories
 } from '../lib/googleFit'
 import Modal from '../components/Modal'
@@ -40,7 +40,7 @@ export default function Exercise() {
   const [stepsSource, setStepsSource] = useState(null)
   const [gitFitBusy, setGitFitBusy] = useState(false)
   const [fitConnected, setFitConnected] = useState(isGoogleFitConnected())
-  const [fitRestoring, setFitRestoring] = useState(isGoogleFitConfigured() && wasGoogleFitLinked() && !isGoogleFitConnected())
+  const [fitRestoring, setFitRestoring] = useState(isGoogleFitConfigured() && !isGoogleFitConnected())
 
   const weightForCalc = currentTrendWeight || profile?.starting_weight_kg || 75
 
@@ -52,16 +52,14 @@ export default function Exercise() {
   }, [user, selectedDate])
 
   useEffect(() => {
-    if (!isGoogleFitConfigured() || !wasGoogleFitLinked() || isGoogleFitConnected()) {
-      setFitRestoring(false)
-      return
-    }
+    if (!isGoogleFitConfigured() || !user) { setFitRestoring(false); return }
+    if (isGoogleFitConnected()) { setFitRestoring(false); return }
     (async () => {
       const ok = await tryRestoreGoogleFitSession()
       setFitConnected(ok)
       setFitRestoring(false)
     })()
-  }, [])
+  }, [user])
 
   // The GIS access token silently refreshes itself in the background
   // (googleFit.js) so the connection survives past its ~1hr lifetime, but
@@ -380,7 +378,7 @@ export default function Exercise() {
           {isGoogleFitConfigured() && fitConnected && (
             <>
               <button className="btn btn-secondary" disabled={gitFitBusy} onClick={() => syncStepsFromFit()}>Sync from Google Fit</button>
-              <button className="btn btn-pill" onClick={() => { disconnectGoogleFit(); setFitConnected(false); setStepsSource(null) }}>Disconnect</button>
+              <button className="btn btn-pill" onClick={async () => { setFitConnected(false); setStepsSource(null); await disconnectGoogleFit() }}>Disconnect</button>
             </>
           )}
         </div>

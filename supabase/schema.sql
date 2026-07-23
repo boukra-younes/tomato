@@ -229,6 +229,15 @@ create table step_logs (
   unique (user_id, log_date)
 );
 
+-- Server-side Google Fit refresh tokens — only ever read/written by the
+-- google-fit-auth Edge Function via the service-role key (bypasses RLS).
+-- No policies granted to anon/authenticated on purpose.
+create table google_fit_tokens (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  refresh_token text not null,
+  updated_at timestamptz default now()
+);
+
 create table health_logs (
   id uuid primary key default uuid_generate_v4(),
   user_id uuid references auth.users(id) on delete cascade,
@@ -454,6 +463,7 @@ alter table exercise_logs enable row level security;
 alter table workout_sessions enable row level security;
 alter table workout_sets enable row level security;
 alter table step_logs enable row level security;
+alter table google_fit_tokens enable row level security;
 alter table health_logs enable row level security;
 alter table achievements enable row level security;
 alter table search_history enable row level security;

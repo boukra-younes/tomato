@@ -1,183 +1,196 @@
 // =========================================================================
 // googleFit.js
-// Browser-only Google Fit step-count integration.
-// Uses Google Identity Services (GIS) for an OAuth2 access token (no
-// backend, no client secret) then calls the Fitness REST API directly
-// with fetch(). Token lives in memory only for the current session.
+// Google Fit step-count integration. Linking still starts in the browser
+// (Google Identity Services), but the resulting refresh token is
+// exchanged and stored server-side via the google-fit-auth Edge Function
+// — never in this browser alone — so the connection survives reloads and
+// follows the user's account across devices. Only short-lived access
+// tokens ever live in memory here.
 // =========================================================================
 
-const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || null
-const SCOPES = 'https://www.googleapis.com/auth/fitness.activity.read'
+import { supabase } from "./supabaseClient";
 
-let gisLoaded = false
-let tokenClient = null
-let currentAccessToken = null
-let tokenExpiresAt = 0
-let refreshTimer = null
+const CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || null;
+const SCOPES = 'https://www.googleapis.com/auth/fitness.activity.read';
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || null;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || null;
 
-const LINKED_STORAGE_KEY = 'googleFitLinked'
-const REFRESH_MARGIN_MS = 5 * 60 * 1000
+let gisLoaded = false;
+let currentAccessToken = null;
+let tokenExpiresAt = 0;
+let refreshTimer = null;
+
+const LINKED_STORAGE_KEY = 'googleFitLinked';
+const REFRESH_MARGIN_MS = 5 * 60 * 1000;
 
 export function isGoogleFitConfigured() {
-  return !!CLIENT_ID
+  return !!CLIENT_ID && !!SUPABASE_URL;
 }
 
 /**
- * wasGoogleFitLinked — true if the user previously granted Google Fit
- * consent on this browser. The in-memory access token never survives a
- * page reload, so this flag is what lets us attempt a silent
- * reconnect (tryRestoreGoogleFitSession) instead of forcing the user to
- * click "Connect" again every time they open the app.
+ * wasGoogleFitLinked — a fast local hint (this browser previously linked
+ * successfully) used only to avoid a UI flash before the real,
+ * server-backed check (tryRestoreGoogleFitSession) resolves. Never the
+ * source of truth — a brand new device with no local flag still gets
+ * correctly detected as linked via the server.
  */
 export function wasGoogleFitLinked() {
-  return typeof window !== 'undefined' && localStorage.getItem(LINKED_STORAGE_KEY) === '1'
+  return typeof window !== 'undefined' && localStorage.getItem(LINKED_STORAGE_KEY) === '1';
 }
 
 function markLinked(linked) {
-  if (typeof window === 'undefined') return
-  if (linked) localStorage.setItem(LINKED_STORAGE_KEY, '1')
-  else localStorage.removeItem(LINKED_STORAGE_KEY)
+  if (typeof window === 'undefined') return;
+  if (linked) localStorage.setItem(LINKED_STORAGE_KEY, '1');
+  else localStorage.removeItem(LINKED_STORAGE_KEY);
 }
 
-/**
- * scheduleSilentRefresh — as long as the tab stays open, silently
- * re-requests a token a few minutes before the current one expires, so
- * the connection never visibly drops out from under the user just from
- * the ~1hr GIS access token lifetime. Re-arms itself after every
- * successful refresh; gives up (leaving "Connect Google Fit" as the
- * fallback) only if a refresh attempt genuinely fails.
- */
 function scheduleSilentRefresh() {
-  if (refreshTimer) clearTimeout(refreshTimer)
-  const delay = Math.max(tokenExpiresAt - Date.now() - REFRESH_MARGIN_MS, 30 * 1000)
-  refreshTimer = setTimeout(() => {
-    tryRestoreGoogleFitSession()
-  }, delay)
+  if (refreshTimer) clearTimeout(refreshTimer);
+  const delay = Math.max(tokenExpiresAt - Date.now() - REFRESH_MARGIN_MS, 30 * 1000);
+  refreshTimer = setTimeout(() => { tryRestoreGoogleFitSession(); }, delay);
 }
 
 function clearSilentRefresh() {
-  if (refreshTimer) clearTimeout(refreshTimer)
-  refreshTimer = null
+  if (refreshTimer) clearTimeout(refreshTimer);
+  refreshTimer = null;
 }
 
 function loadGisScript() {
   return new Promise((resolve, reject) => {
     if (gisLoaded && window.google?.accounts?.oauth2) {
-      resolve()
-      return
+      resolve();
+      return;
     }
-    const existing = document.getElementById('gis-client-script')
+    const existing = document.getElementById('gis-client-script');
     if (existing) {
-      existing.addEventListener('load', () => { gisLoaded = true; resolve() })
-      existing.addEventListener('error', reject)
-      return
+      existing.addEventListener('load', () => { gisLoaded = true; resolve(); });
+      existing.addEventListener('error', reject);
+      return;
     }
-    const script = document.createElement('script')
-    script.id = 'gis-client-script'
-    script.src = 'https://accounts.google.com/gsi/client'
-    script.async = true
-    script.defer = true
-    script.onload = () => { gisLoaded = true; resolve() }
-    script.onerror = reject
-    document.head.appendChild(script)
-  })
+    const script = document.createElement('script');
+    script.id = 'gis-client-script';
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.defer = true;
+    script.onload = () => { gisLoaded = true; resolve(); };
+    script.onerror = reject;
+    document.head.appendChild(script);
+  });
 }
 
 /**
- * connectGoogleFit — opens the Google consent popup and resolves with a
- * short-lived access token. Never throws to the caller for user-dismissed
- * popups; rejects with an Error for genuine failures instead.
+ * callGoogleFitAuth — talks to the google-fit-auth Edge Function, which
+ * holds the Google client secret and the stored refresh token. Requires
+ * the caller to be signed in to this app (its Supabase session is what
+ * ties the Google Fit link to a specific account, not to a browser).
+ */
+async function callGoogleFitAuth(action, params = {}) {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) throw new Error('Not signed in.');
+
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/google-fit-auth`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${session.access_token}`,
+      apikey: SUPABASE_ANON_KEY || '',
+    },
+    body: JSON.stringify({ action, ...params }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || `Google Fit request failed (${res.status})`);
+    err.status = res.status;
+    err.payload = data;
+    throw err;
+  }
+  return data;
+}
+
+/**
+ * connectGoogleFit — opens the Google consent popup requesting offline
+ * access, exchanges the resulting authorization code for tokens via the
+ * Edge Function (which stores the refresh token server-side), and
+ * resolves with a short-lived access token ready to use immediately.
  */
 export async function connectGoogleFit() {
-  if (!CLIENT_ID) {
-    throw new Error('Google Fit is not configured (missing VITE_GOOGLE_CLIENT_ID).')
+  if (!isGoogleFitConfigured()) {
+    throw new Error('Google Fit is not configured (missing VITE_GOOGLE_CLIENT_ID or Supabase config).');
   }
-  await loadGisScript()
+  await loadGisScript();
 
-  return new Promise((resolve, reject) => {
+  const code = await new Promise((resolve, reject) => {
     try {
-      tokenClient = window.google.accounts.oauth2.initTokenClient({
+      const codeClient = window.google.accounts.oauth2.initCodeClient({
         client_id: CLIENT_ID,
         scope: SCOPES,
+        ux_mode: 'popup',
+        access_type: 'offline',
+        prompt: 'consent',
         callback: (response) => {
           if (response.error) {
-            reject(new Error(response.error))
-            return
+            reject(new Error(response.error));
+            return;
           }
-          currentAccessToken = response.access_token
-          tokenExpiresAt = Date.now() + (response.expires_in || 3600) * 1000
-          markLinked(true)
-          scheduleSilentRefresh()
-          resolve(currentAccessToken)
-        }
-      })
-      tokenClient.requestAccessToken({ prompt: currentAccessToken ? '' : 'consent' })
+          resolve(response.code);
+        },
+      });
+      codeClient.requestCode();
     } catch (err) {
-      reject(err)
+      reject(err);
     }
-  })
+  });
+
+  const result = await callGoogleFitAuth('exchange', { code });
+  currentAccessToken = result.access_token;
+  tokenExpiresAt = Date.now() + (result.expires_in || 3600) * 1000;
+  markLinked(true);
+  scheduleSilentRefresh();
+  return currentAccessToken;
 }
 
 export function isGoogleFitConnected() {
-  return !!currentAccessToken && Date.now() < tokenExpiresAt
+  return !!currentAccessToken && Date.now() < tokenExpiresAt;
 }
 
-export function disconnectGoogleFit() {
-  if (currentAccessToken && window.google?.accounts?.oauth2?.revoke) {
-    window.google.accounts.oauth2.revoke(currentAccessToken, () => {})
+export async function disconnectGoogleFit() {
+  clearSilentRefresh();
+  try {
+    await callGoogleFitAuth('disconnect');
+  } catch {
+    // best-effort — clear local state regardless
   }
-  currentAccessToken = null
-  tokenExpiresAt = 0
-  markLinked(false)
-  clearSilentRefresh()
+  currentAccessToken = null;
+  tokenExpiresAt = 0;
+  markLinked(false);
 }
 
 /**
- * tryRestoreGoogleFitSession — called once per page load. If the user
- * previously linked Google Fit on this browser, silently requests a fresh
- * access token (no visible consent screen when the grant is still valid)
- * so the connection survives a reload instead of requiring the user to
- * click "Connect" again. Resolves false (never throws) if silent reauth
- * isn't possible, leaving the "Connect Google Fit" button as the fallback.
+ * tryRestoreGoogleFitSession — mints a fresh access token from the
+ * server-stored refresh token, with no Google popup and no dependency on
+ * this browser's history. Safe to call on every page load (and on a
+ * timer before the current token expires): it simply reports "not
+ * linked" if the signed-in account has never connected Google Fit, and
+ * re-arms its own refresh loop on success.
  */
 export async function tryRestoreGoogleFitSession() {
-  if (!CLIENT_ID || !wasGoogleFitLinked()) return false
+  if (!isGoogleFitConfigured()) return false;
   if (isGoogleFitConnected()) {
-    scheduleSilentRefresh()
-    return true
+    scheduleSilentRefresh();
+    return true;
   }
   try {
-    await loadGisScript()
-  } catch {
-    return false
+    const result = await callGoogleFitAuth('refresh');
+    currentAccessToken = result.access_token;
+    tokenExpiresAt = Date.now() + (result.expires_in || 3600) * 1000;
+    markLinked(true);
+    scheduleSilentRefresh();
+    return true;
+  } catch (err) {
+    if (err.status === 401 && err.payload?.revoked) markLinked(false);
+    if (err.status === 404) markLinked(false);
+    return false;
   }
-
-  return new Promise((resolve) => {
-    try {
-      tokenClient = window.google.accounts.oauth2.initTokenClient({
-        client_id: CLIENT_ID,
-        scope: SCOPES,
-        callback: (response) => {
-          if (response.error) {
-            // A silent refresh can legitimately fail (offline, third-party
-            // cookies blocked, brief Google-side hiccup) without the user
-            // having revoked access — don't unlink on that. scheduleSilentRefresh
-            // isn't re-armed here, but the next full page load or manual
-            // "Connect" retries the same silent flow.
-            resolve(false)
-            return
-          }
-          currentAccessToken = response.access_token
-          tokenExpiresAt = Date.now() + (response.expires_in || 3600) * 1000
-          scheduleSilentRefresh()
-          resolve(true)
-        }
-      })
-      tokenClient.requestAccessToken({ prompt: '' })
-    } catch {
-      resolve(false)
-    }
-  })
 }
 
 /**
@@ -186,12 +199,12 @@ export async function tryRestoreGoogleFitSession() {
  */
 export async function fetchStepsForDate(dateStr) {
   if (!isGoogleFitConnected()) {
-    throw new Error('Google Fit is not connected.')
+    throw new Error('Google Fit is not connected.');
   }
-  const start = new Date(dateStr)
-  start.setHours(0, 0, 0, 0)
-  const end = new Date(dateStr)
-  end.setHours(23, 59, 59, 999)
+  const start = new Date(dateStr);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(dateStr);
+  end.setHours(23, 59, 59, 999);
 
   const res = await fetch('https://www.googleapis.com/fitness/v1/users/me/dataset:aggregate', {
     method: 'POST',
@@ -205,24 +218,24 @@ export async function fetchStepsForDate(dateStr) {
       startTimeMillis: start.getTime(),
       endTimeMillis: end.getTime()
     })
-  })
+  });
 
   if (!res.ok) {
-    throw new Error(`Google Fit request failed (${res.status})`)
+    throw new Error(`Google Fit request failed (${res.status})`);
   }
 
-  const data = await res.json()
-  let steps = 0
+  const data = await res.json();
+  let steps = 0;
   for (const bucket of data.bucket || []) {
     for (const dataset of bucket.dataset || []) {
       for (const point of dataset.point || []) {
         for (const value of point.value || []) {
-          steps += value.intVal || 0
+          steps += value.intVal || 0;
         }
       }
     }
   }
-  return steps
+  return steps;
 }
 
 /**
@@ -231,12 +244,12 @@ export async function fetchStepsForDate(dateStr) {
  */
 export async function fetchStepsRange(startDateStr, endDateStr) {
   if (!isGoogleFitConnected()) {
-    throw new Error('Google Fit is not connected.')
+    throw new Error('Google Fit is not connected.');
   }
-  const start = new Date(startDateStr)
-  start.setHours(0, 0, 0, 0)
-  const end = new Date(endDateStr)
-  end.setHours(23, 59, 59, 999)
+  const start = new Date(startDateStr);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(endDateStr);
+  end.setHours(23, 59, 59, 999);
 
   const res = await fetch('https://www.googleapis.com/fitness/v1/users/me/dataset:aggregate', {
     method: 'POST',
@@ -250,29 +263,29 @@ export async function fetchStepsRange(startDateStr, endDateStr) {
       startTimeMillis: start.getTime(),
       endTimeMillis: end.getTime()
     })
-  })
+  });
 
   if (!res.ok) {
-    throw new Error(`Google Fit request failed (${res.status})`)
+    throw new Error(`Google Fit request failed (${res.status})`);
   }
 
-  const data = await res.json()
+  const data = await res.json();
   return (data.bucket || []).map(bucket => {
-    let steps = 0
+    let steps = 0;
     for (const dataset of bucket.dataset || []) {
       for (const point of dataset.point || []) {
         for (const value of point.value || []) {
-          steps += value.intVal || 0
+          steps += value.intVal || 0;
         }
       }
     }
-    const date = new Date(Number(bucket.startTimeMillis)).toISOString().slice(0, 10)
-    return { date, steps }
-  })
+    const date = new Date(Number(bucket.startTimeMillis)).toISOString().slice(0, 10);
+    return { date, steps };
+  });
 }
 
-const WALKING_MET = 3.5
-const AVERAGE_STEPS_PER_MINUTE = 100
+const WALKING_MET = 3.5;
+const AVERAGE_STEPS_PER_MINUTE = 100;
 
 /**
  * estimateStepsCalories — auto-calculates calories burned from a step
@@ -283,8 +296,8 @@ const AVERAGE_STEPS_PER_MINUTE = 100
  * typical fitness-tracker estimates.
  */
 export function estimateStepsCalories(steps, weightKg = 75) {
-  const count = Number(steps) || 0
-  if (!count) return 0
-  const durationHours = count / AVERAGE_STEPS_PER_MINUTE / 60
-  return Math.round(WALKING_MET * weightKg * durationHours)
+  const count = Number(steps) || 0;
+  if (!count) return 0;
+  const durationHours = count / AVERAGE_STEPS_PER_MINUTE / 60;
+  return Math.round(WALKING_MET * weightKg * durationHours);
 }
