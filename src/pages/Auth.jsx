@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import toast from 'react-hot-toast'
 
@@ -51,7 +51,7 @@ export default function Auth() {
 
   return (
     <div className="app-shell" style={{ maxWidth: 420, paddingTop: 80 }}>
-      <div className="eyebrow">Nutrition Platform</div>
+      <div className="eyebrow">Healthy Tomato</div>
       <h1 className="hero-number" style={{ fontSize: 40 }}>
         {mode === 'signin' ? 'Sign in' : mode === 'signup' ? 'Create account' : 'Reset password'}
       </h1>
@@ -86,6 +86,10 @@ export default function Auth() {
         {mode !== 'signin' && <button className="btn-secondary" style={{ border: 'none', background: 'none', cursor: 'pointer', fontFamily: 'IBM Plex Mono, monospace', fontSize: 12, color: 'var(--teal)' }} onClick={() => setMode('signin')}>Sign in</button>}
         {mode !== 'signup' && <button className="btn-secondary" style={{ border: 'none', background: 'none', cursor: 'pointer', fontFamily: 'IBM Plex Mono, monospace', fontSize: 12, color: 'var(--teal)' }} onClick={() => setMode('signup')}>Create account</button>}
         {mode !== 'reset' && <button className="btn-secondary" style={{ border: 'none', background: 'none', cursor: 'pointer', fontFamily: 'IBM Plex Mono, monospace', fontSize: 12, color: 'var(--teal)' }} onClick={() => setMode('reset')}>Forgot password</button>}
+      </div>
+      <div className="eyebrow" style={{ marginTop: 28, display: 'flex', gap: 16 }}>
+        <Link to="/privacy">Privacy Policy</Link>
+        <Link to="/terms">Terms of Service</Link>
       </div>
     </div>
   )

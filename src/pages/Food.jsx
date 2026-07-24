@@ -9,7 +9,7 @@ import toast from 'react-hot-toast'
 
 const MEAL_TYPES = ['breakfast', 'lunch', 'dinner', 'snack']
 const SEARCH_MODES = [
-  { key: 'raw', label: 'Raw ingredient', hint: 'USDA reference data — eggs, meat, produce, grains. No brands.' },
+  { key: 'raw', label: 'Raw ingredient', hint: 'Curated + AI-backed database — eggs, meat, produce, grains. No brands.' },
   { key: 'branded', label: 'Packaged / branded', hint: 'Open Food Facts — search by product or brand name.' }
 ]
 

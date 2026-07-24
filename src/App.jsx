@@ -1,10 +1,13 @@
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, Link } from 'react-router-dom'
 import { useEffect } from 'react'
 import Header from './components/Header'
 import TabNav from './components/TabNav'
 import MobileNav from './components/MobileNav'
 import ProtectedRoute from './components/ProtectedRoute'
 import Auth from './pages/Auth'
+import PrivacyPolicy from './pages/PrivacyPolicy'
+import TermsOfService from './pages/TermsOfService'
+import Landing from './pages/Landing'
 import Onboarding from './pages/Onboarding'
 import Home from './pages/Home'
 import Food from './pages/Food'
@@ -24,9 +27,20 @@ function Shell({ children }) {
       <Header />
       <TabNav />
       {children}
+      <div className="eyebrow" style={{ display: 'flex', gap: 16, justifyContent: 'center', margin: '32px 0 8px' }}>
+        <Link to="/privacy">Privacy Policy</Link>
+        <Link to="/terms">Terms of Service</Link>
+      </div>
       <MobileNav />
     </div>
   )
+}
+
+function RootRoute() {
+  const { user, loading } = useAuth()
+  if (loading) return <div className="app-shell">Loading...</div>
+  if (!user) return <Landing />
+  return <ProtectedRoute><Shell><Home /></Shell></ProtectedRoute>
 }
 
 export default function App() {
@@ -52,8 +66,10 @@ export default function App() {
     <>
       <Routes>
         <Route path="/auth" element={<Auth />} />
+        <Route path="/privacy" element={<PrivacyPolicy />} />
+        <Route path="/terms" element={<TermsOfService />} />
         <Route path="/onboarding" element={<ProtectedRoute><Onboarding /></ProtectedRoute>} />
-        <Route path="/" element={<ProtectedRoute><Shell><Home /></Shell></ProtectedRoute>} />
+        <Route path="/" element={<RootRoute />} />
         <Route path="/food" element={<ProtectedRoute><Shell><Food /></Shell></ProtectedRoute>} />
         <Route path="/plan" element={<ProtectedRoute><Shell><Plan /></Shell></ProtectedRoute>} />
         <Route path="/body" element={<ProtectedRoute><Shell><Body /></Shell></ProtectedRoute>} />
